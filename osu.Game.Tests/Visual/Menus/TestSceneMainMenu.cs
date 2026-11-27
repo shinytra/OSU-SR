@@ -10,6 +10,7 @@ using osu.Game.Online.API;
 using osu.Game.Online.API.Requests.Responses;
 using osu.Game.Online.Metadata;
 using osu.Game.Online.Rooms;
+using osu.Game.OsuSR;
 using osu.Game.Overlays;
 using osu.Game.Screens.Menu;
 using osuTK.Input;
@@ -18,6 +19,19 @@ namespace osu.Game.Tests.Visual.Menus
 {
     public partial class TestSceneMainMenu : OsuGameTestScene
     {
+        // OSU SR: these tests cover upstream menu flows (submenus, daily challenge, editors), which minimal mode hides.
+        public override void SetUpSteps()
+        {
+            AddStep("disable minimal mode", () => OsuSRFeatures.MinimalMenu = false);
+            base.SetUpSteps();
+        }
+
+        public override void TearDownSteps()
+        {
+            base.TearDownSteps();
+            AddStep("restore minimal mode", () => OsuSRFeatures.MinimalMenu = true);
+        }
+
         private OnlineMenuBanner onlineMenuBanner => Game.ChildrenOfType<OnlineMenuBanner>().Single();
 
         [Test]

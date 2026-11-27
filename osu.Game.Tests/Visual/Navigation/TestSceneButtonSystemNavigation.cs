@@ -4,6 +4,7 @@
 using System.Linq;
 using NUnit.Framework;
 using osu.Framework.Testing;
+using osu.Game.OsuSR;
 using osu.Game.Screens.Menu;
 using osu.Game.Screens.Select;
 using osuTK.Input;
@@ -13,6 +14,13 @@ namespace osu.Game.Tests.Visual.Navigation
     public partial class TestSceneButtonSystemNavigation : OsuGameTestScene
     {
         private ButtonSystem buttons => ((MainMenu)Game.ScreenStack.CurrentScreen).ChildrenOfType<ButtonSystem>().Single();
+
+        // OSU SR: these tests cover the minimal menu, so make sure it is enabled even if another test scene left it off.
+        public override void SetUpSteps()
+        {
+            AddStep("enable minimal mode", () => OsuSRFeatures.MinimalMenu = true);
+            base.SetUpSteps();
+        }
 
         [Test]
         public void TestGlobalActionHasPriority()

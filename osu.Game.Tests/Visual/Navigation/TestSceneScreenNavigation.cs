@@ -29,6 +29,7 @@ using osu.Game.Graphics.UserInterface;
 using osu.Game.Online.API;
 using osu.Game.Online.Notifications.WebSocket;
 using osu.Game.Online.Notifications.WebSocket.Events;
+using osu.Game.OsuSR;
 using osu.Game.Overlays;
 using osu.Game.Overlays.BeatmapListing;
 using osu.Game.Overlays.Mods;
@@ -64,6 +65,19 @@ namespace osu.Game.Tests.Visual.Navigation
 {
     public partial class TestSceneScreenNavigation : OsuGameTestScene
     {
+        // OSU SR: these tests cover upstream menu flows (submenus, daily challenge, editors), which minimal mode hides.
+        public override void SetUpSteps()
+        {
+            AddStep("disable minimal mode", () => OsuSRFeatures.MinimalMenu = false);
+            base.SetUpSteps();
+        }
+
+        public override void TearDownSteps()
+        {
+            base.TearDownSteps();
+            AddStep("restore minimal mode", () => OsuSRFeatures.MinimalMenu = true);
+        }
+
         private const float click_padding = 25;
 
         private Vector2 backButtonPosition => Game.ToScreenSpace(new Vector2(click_padding, Game.LayoutRectangle.Bottom - click_padding));
