@@ -16,6 +16,7 @@ using osu.Game.Online;
 using osu.Game.Online.API;
 using osu.Game.Online.API.Requests;
 using osu.Game.Online.API.Requests.Responses;
+using osu.Game.OsuSR;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Login;
 using osu.Game.Overlays.Settings;
@@ -52,8 +53,22 @@ namespace osu.Game.Tests.Visual.Menus
         [SetUpSteps]
         public void SetUpSteps()
         {
+            // OSU SR: the login panel is disabled in minimal mode; these tests cover the upstream login flow.
+            AddStep("disable minimal mode", () => OsuSRFeatures.MinimalMenu = false);
             AddStep("reset online state", () => localConfig.SetValue(OsuSetting.UserOnlineStatus, UserStatus.Online));
             AddStep("show login overlay", () => loginOverlay.Show());
+        }
+
+        [TearDownSteps]
+        public void TearDownSteps() => AddStep("restore minimal mode", () => OsuSRFeatures.MinimalMenu = true);
+
+        [Test]
+        public void TestMinimalModeNeverShowsLogin()
+        {
+            AddStep("hide login overlay", () => loginOverlay.Hide());
+            AddStep("enable minimal mode", () => OsuSRFeatures.MinimalMenu = true);
+            AddStep("try to show login overlay", () => loginOverlay.Show());
+            AddUntilStep("login overlay stays hidden", () => loginOverlay.State.Value, () => Is.EqualTo(Visibility.Hidden));
         }
 
         [Test]

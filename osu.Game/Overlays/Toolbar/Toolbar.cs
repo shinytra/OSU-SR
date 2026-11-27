@@ -64,7 +64,7 @@ namespace osu.Game.Overlays.Toolbar
         private Bindable<RulesetInfo> ruleset { get; set; }
 
         /// <summary>
-        /// OSU SR: hides toolbar buttons for online features when <see cref="OsuSRFeatures.MinimalMenu"/> is enabled.
+        /// OSU SR: hides toolbar buttons for online features and the account/login button when <see cref="OsuSRFeatures.MinimalMenu"/> is enabled.
         /// </summary>
         private static void hideInMinimalMode(Drawable button)
         {
@@ -184,7 +184,7 @@ namespace osu.Game.Overlays.Toolbar
                                             //{
                                             //    Icon = FontAwesome.Solid.search
                                             //},
-                                            userButton = new ToolbarUserButton(),
+                                            userButton = new ToolbarUserButton().With(hideInMinimalMode),
                                             new ToolbarClock(),
                                             new ToolbarNotificationButton(),
                                         }

@@ -12,6 +12,7 @@ using osu.Game.Overlays;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Containers;
 using osu.Game.Online.API;
+using osu.Game.OsuSR;
 
 namespace osu.Game.Tests.Visual.Online
 {
@@ -66,11 +67,14 @@ namespace osu.Game.Tests.Visual.Online
         [Test]
         public void TestOfflineRandomCommentPill()
         {
+            // OSU SR: the login panel is disabled in minimal mode; this covers the upstream flow.
+            AddStep("disable minimal mode", () => OsuSRFeatures.MinimalMenu = false);
             AddStep("Hide login overlay", () => login.Hide());
             AddStep("Log out", API.Logout);
             AddStep("Random comment", () => addVotePill(getRandomComment()));
             AddStep("Click", () => votePill.TriggerClick());
             AddAssert("Login overlay is visible", () => login.State.Value == Visibility.Visible);
+            AddStep("restore minimal mode", () => OsuSRFeatures.MinimalMenu = true);
         }
 
         private void logIn()

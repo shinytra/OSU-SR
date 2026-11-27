@@ -30,6 +30,7 @@ using osu.Game.IO;
 using osu.Game.Localisation;
 using osu.Game.Online.API;
 using osu.Game.Online.Matchmaking;
+using osu.Game.OsuSR;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Dialog;
 using osu.Game.Overlays.SkinEditor;
@@ -329,7 +330,8 @@ namespace osu.Game.Screens.Menu
 
         private void displayLoginIfApplicable()
         {
-            if (loginDisplayed.Value) return;
+            // OSU SR: never prompt for login in minimal mode.
+            if (OsuSRFeatures.MinimalMenu || loginDisplayed.Value) return;
 
             if (!api.IsLoggedIn || api.State.Value == APIState.RequiresSecondFactorAuth)
             {

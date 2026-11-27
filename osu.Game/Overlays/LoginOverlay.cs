@@ -9,6 +9,7 @@ using osuTK.Graphics;
 using osu.Framework.Graphics.Shapes;
 using osu.Game.Graphics.Containers;
 using osu.Game.Graphics.Cursor;
+using osu.Game.OsuSR;
 using osu.Game.Overlays.Login;
 using osu.Game.Overlays.Settings;
 
@@ -74,6 +75,13 @@ namespace osu.Game.Overlays
 
         protected override void PopIn()
         {
+            // OSU SR: no online account in minimal mode, so the login panel never opens.
+            if (OsuSRFeatures.MinimalMenu)
+            {
+                State.Value = Visibility.Hidden;
+                return;
+            }
+
             panel.Bounding = true;
             this.FadeIn(transition_time, Easing.OutQuint);
             FadeEdgeEffectTo(WaveContainer.SHADOW_OPACITY, WaveContainer.APPEAR_DURATION, Easing.Out);
