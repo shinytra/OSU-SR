@@ -31,6 +31,7 @@ using osu.Game.Localisation;
 using osu.Game.Online.API;
 using osu.Game.Online.Matchmaking;
 using osu.Game.OsuSR;
+using osu.Game.OsuSR.Screens;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Dialog;
 using osu.Game.Overlays.SkinEditor;
@@ -160,6 +161,7 @@ namespace osu.Game.Screens.Menu
                                 skinEditor?.Show();
                             },
                             OnSolo = loadSongSelect,
+                            OnTraining = skillset => this.Push(new TrainingSession(skillset)),
                             OnMultiplayer = () => this.Push(new Multiplayer()),
                             OnQuickPlay = loadQuickPlay,
                             OnRankedPlay = loadRankedPlay,

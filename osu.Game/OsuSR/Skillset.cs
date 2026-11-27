@@ -1,11 +1,11 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-namespace osu.Game.Rulesets.Osu.OsuSR
+namespace osu.Game.OsuSR
 {
     /// <summary>
     /// A skill that an OSU SR session can train.
-    /// Each one maps to a skill of the osu!standard difficulty calculator.
+    /// Each one maps to a skill of the osu!standard difficulty calculator (see SkillsetSegmentFinder in the osu! ruleset).
     /// </summary>
     public enum Skillset
     {

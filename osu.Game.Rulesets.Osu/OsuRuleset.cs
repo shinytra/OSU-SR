@@ -17,6 +17,7 @@ using osu.Game.Configuration;
 using osu.Game.Graphics;
 using osu.Game.Localisation;
 using osu.Game.Localisation.Osu;
+using osu.Game.OsuSR;
 using osu.Game.Overlays.Settings;
 using osu.Game.Rulesets.Configuration;
 using osu.Game.Rulesets.Difficulty;
@@ -30,6 +31,7 @@ using osu.Game.Rulesets.Osu.Edit;
 using osu.Game.Rulesets.Osu.Edit.Setup;
 using osu.Game.Rulesets.Osu.Mods;
 using osu.Game.Rulesets.Osu.Objects;
+using osu.Game.Rulesets.Osu.OsuSR;
 using osu.Game.Rulesets.Osu.Replays;
 using osu.Game.Rulesets.Osu.Scoring;
 using osu.Game.Rulesets.Osu.Skinning.Argon;
@@ -50,8 +52,11 @@ using osuTK;
 
 namespace osu.Game.Rulesets.Osu
 {
-    public class OsuRuleset : Ruleset, ILegacyRuleset
+    public class OsuRuleset : Ruleset, ILegacyRuleset, IHasSkillsetSegments
     {
+        // OSU SR: training sessions find the hardest parts of maps with this.
+        public ISkillsetSegmentFinder CreateSkillsetSegmentFinder() => new SkillsetSegmentFinder();
+
         public override DrawableRuleset CreateDrawableRulesetWith(IBeatmap beatmap, IReadOnlyList<Mod>? mods = null) => new DrawableOsuRuleset(this, beatmap, mods);
 
         public override ScoreProcessor CreateScoreProcessor() => new OsuScoreProcessor();
@@ -246,6 +251,8 @@ namespace osu.Game.Rulesets.Osu
                     {
                         new OsuModTouchDevice(),
                         new ModScoreV2(),
+                        // OSU SR: applied by training sessions; system mods are not shown in mod select.
+                        new OsuModSegment(),
                     };
 
                 default:

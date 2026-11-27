@@ -46,6 +46,11 @@ namespace osu.Game.Screens.Menu
         public Action<UIEvent>? OnExit;
         public Action? OnBeatmapListing;
         public Action? OnSolo;
+
+        /// <summary>
+        /// OSU SR: starts a continuous training session for a skillset.
+        /// </summary>
+        public Action<Skillset>? OnTraining;
         public Action? OnSettings;
         public Action? OnMultiplayer;
         public Action? OnQuickPlay;
@@ -183,6 +188,9 @@ namespace osu.Game.Screens.Menu
                 {
                     Padding = new MarginPadding { Left = WEDGE_WIDTH },
                 });
+                buttonsTopLevel.Add(new MainMenuButton("aim", @"button-default-select", FontAwesome.Solid.Crosshairs, new Color4(204, 68, 102, 255), (_, _) => OnTraining?.Invoke(Skillset.Aim), Key.A));
+                buttonsTopLevel.Add(new MainMenuButton("speed", @"button-default-select", FontAwesome.Solid.Bolt, new Color4(238, 136, 0, 255), (_, _) => OnTraining?.Invoke(Skillset.Speed), Key.S));
+                buttonsTopLevel.Add(new MainMenuButton("reading", @"button-default-select", FontAwesome.Solid.Eye, new Color4(0, 153, 187, 255), (_, _) => OnTraining?.Invoke(Skillset.Reading), Key.R));
             }
             else
             {

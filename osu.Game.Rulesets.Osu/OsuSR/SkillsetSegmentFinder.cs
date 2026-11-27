@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using osu.Game.Beatmaps;
+using osu.Game.OsuSR;
 using osu.Game.Rulesets.Difficulty.Preprocessing;
 using osu.Game.Rulesets.Difficulty.Skills;
 using osu.Game.Rulesets.Mods;
@@ -19,7 +20,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
     /// Finds the hardest parts of a beatmap for each <see cref="Skillset"/>,
     /// using the per-object difficulties computed by the osu!standard difficulty calculator.
     /// </summary>
-    public class SkillsetSegmentFinder
+    public class SkillsetSegmentFinder : ISkillsetSegmentFinder
     {
         /// <summary>Target length (ms) of the hit object window of a segment.</summary>
         public double SegmentLength { get; init; } = 20_000;
@@ -29,6 +30,15 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         /// <summary>Minimum gap (ms) between two segments picked from the same map.</summary>
         public double MinimumGap { get; init; } = 2_000;
+
+        IReadOnlyList<MapSegment> ISkillsetSegmentFinder.FindSegments(IWorkingBeatmap beatmap, Skillset skillset, int maxSegments, CancellationToken cancellationToken)
+            => FindSegments(beatmap, skillset, maxSegments, null, cancellationToken);
+
+        public Mod CreateSegmentMod(MapSegment segment) => new OsuModSegment
+        {
+            FirstObjectTime = { Value = segment.FirstObjectTime },
+            EndTime = { Value = segment.EndTime },
+        };
 
         /// <summary>
         /// Computes per-object difficulties for every skillset.
