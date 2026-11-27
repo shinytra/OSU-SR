@@ -51,9 +51,7 @@ namespace osu.Game.Tests.Visual.Navigation
             AddStep("press P", () => InputManager.Key(Key.P));
             AddAssert("state is top level", () => buttons.State == ButtonSystemState.TopLevel);
 
-            AddStep("press P", () => InputManager.Key(Key.P));
-            AddAssert("state is play", () => buttons.State == ButtonSystemState.Play);
-
+            // OSU SR: with the minimal menu, "Play" goes straight to song select (no play submenu).
             AddStep("press P", () => InputManager.Key(Key.P));
             AddAssert("entered song select", () => Game.ScreenStack.CurrentScreen is SoloSongSelect);
         }

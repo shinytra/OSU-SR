@@ -9,6 +9,7 @@ using NUnit.Framework;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Colour;
 using osu.Framework.Graphics.Shapes;
+using osu.Game.OsuSR;
 using osu.Game.Screens.Menu;
 using osuTK;
 using osuTK.Graphics;
@@ -24,6 +25,38 @@ namespace osu.Game.Tests.Visual.UserInterface
 
         [SetUp]
         public void SetUp() => Schedule(() =>
+        {
+            // These tests cover the full upstream menu. OSU SR's minimal menu is covered by TestMinimalMenuPlayGoesToSongSelect.
+            OsuSRFeatures.MinimalMenu = false;
+            createButtons();
+        });
+
+        [TearDown]
+        public void TearDown() => OsuSRFeatures.MinimalMenu = true;
+
+        [Test]
+        public void TestMinimalMenuPlayGoesToSongSelect()
+        {
+            int activationCount = 0;
+
+            AddStep("enable minimal menu", () =>
+            {
+                OsuSRFeatures.MinimalMenu = true;
+                createButtons();
+                buttons.OnSolo = () => activationCount++;
+            });
+
+            AddStep("press P twice", () =>
+            {
+                InputManager.Key(Key.P);
+                InputManager.Key(Key.P);
+            });
+
+            AddAssert("solo activated", () => activationCount, () => Is.EqualTo(1));
+            AddAssert("play submenu never shown", () => buttons.State, () => Is.Not.EqualTo(ButtonSystemState.Play));
+        }
+
+        private void createButtons()
         {
             Children = new Drawable[]
             {
@@ -41,7 +74,7 @@ namespace osu.Game.Tests.Visual.UserInterface
             };
 
             buttons.SetOsuLogo(logo);
-        });
+        }
 
         [Test]
         public void TestAllStates()

@@ -18,6 +18,7 @@ using osu.Game.Rulesets;
 using osu.Framework.Input.Bindings;
 using osu.Game.Graphics.Containers;
 using osu.Game.Input.Bindings;
+using osu.Game.OsuSR;
 
 namespace osu.Game.Overlays.Toolbar
 {
@@ -61,6 +62,15 @@ namespace osu.Game.Overlays.Toolbar
 
         [Resolved]
         private Bindable<RulesetInfo> ruleset { get; set; }
+
+        /// <summary>
+        /// OSU SR: hides toolbar buttons for online features when <see cref="OsuSRFeatures.MinimalMenu"/> is enabled.
+        /// </summary>
+        private static void hideInMinimalMode(Drawable button)
+        {
+            if (OsuSRFeatures.MinimalMenu)
+                button.Hide();
+        }
 
         [BackgroundDependencyLoader(true)]
         private void load(OsuGame osuGame)
@@ -162,13 +172,13 @@ namespace osu.Game.Overlays.Toolbar
                                         AutoSizeAxes = Axes.X,
                                         Children = new Drawable[]
                                         {
-                                            new ToolbarNewsButton(),
-                                            new ToolbarChangelogButton(),
-                                            new ToolbarWikiButton(),
-                                            new ToolbarRankingsButton(),
-                                            new ToolbarBeatmapListingButton(),
-                                            new ToolbarChatButton(),
-                                            new ToolbarSocialButton(),
+                                            new ToolbarNewsButton().With(hideInMinimalMode),
+                                            new ToolbarChangelogButton().With(hideInMinimalMode),
+                                            new ToolbarWikiButton().With(hideInMinimalMode),
+                                            new ToolbarRankingsButton().With(hideInMinimalMode),
+                                            new ToolbarBeatmapListingButton().With(hideInMinimalMode),
+                                            new ToolbarChatButton().With(hideInMinimalMode),
+                                            new ToolbarSocialButton().With(hideInMinimalMode),
                                             new ToolbarMusicButton(),
                                             //new ToolbarButton
                                             //{
