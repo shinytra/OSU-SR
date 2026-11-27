@@ -16,6 +16,7 @@ using osu.Game.Graphics.Sprites;
 using osu.Game.Online.API;
 using osu.Game.Online.API.Requests;
 using osu.Game.Online.API.Requests.Responses;
+using osu.Game.OsuSR;
 using osu.Game.Overlays;
 using osu.Game.Overlays.BeatmapListing;
 using osu.Game.Rulesets;
@@ -36,6 +37,8 @@ namespace osu.Game.Tests.Visual.SongSelect
         [SetUpSteps]
         public override void SetUpSteps()
         {
+            // OSU SR: TestBeatmapListingFilter opens the beatmap listing with its toolbar shortcut, which minimal mode hides.
+            AddStep("disable minimal mode", () => OsuSRFeatures.MinimalMenu = false);
             AddStep("populate ruleset statistics", () =>
             {
                 ((DummyAPIAccess)API).HandleRequest = r =>
@@ -82,6 +85,12 @@ namespace osu.Game.Tests.Visual.SongSelect
             }
 
             base.SetUpSteps();
+        }
+
+        public override void TearDownSteps()
+        {
+            base.TearDownSteps();
+            AddStep("restore minimal mode", () => OsuSRFeatures.MinimalMenu = true);
         }
 
         [Test]
