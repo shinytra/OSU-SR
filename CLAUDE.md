@@ -9,7 +9,7 @@ Scope for now: **osu!standard only**, using the player's **locally installed bea
 ## Plan
 
 1. Minimal lazer base: only "pick a map, play it, see results". (done in the first PR)
-2. Skillset segment detection from lazer's per-object difficulty strains (`osu.Game.Rulesets.Osu/Difficulty/Skills`).
+2. Skillset segment detection from lazer's per-object difficulty strains: `osu.Game.Rulesets.Osu/OsuSR/SkillsetSegmentFinder.cs` (Aim, Speed, Reading).
 3. Play a segment: start/end time inside a map, score only that part.
 4. Continuous session: chain segments with audio crossfade, close BPMs where possible, short countdown, no menu in between.
 
