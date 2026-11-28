@@ -273,7 +273,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         private static double median(IEnumerable<double> values)
         {
-            var sorted = values.OrderBy(v => v).ToArray();
+            double[] sorted = values.OrderBy(v => v).ToArray();
             return sorted.Length == 0 ? 0 : sorted[sorted.Length / 2];
         }
     }
