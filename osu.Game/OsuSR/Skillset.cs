@@ -1,21 +1,58 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+using System.ComponentModel;
+
 namespace osu.Game.OsuSR
 {
     /// <summary>
     /// A skill that an OSU SR session can train.
-    /// Each one maps to a skill of the osu!standard difficulty calculator (see SkillsetSegmentFinder in the osu! ruleset).
+    /// Each one is detected from note patterns (see PatternClassifier and SkillsetSegmentFinder in the osu! ruleset).
     /// </summary>
     public enum Skillset
     {
-        /// <summary>Jumps and cursor movement (the calculator's aim skill, sliders included).</summary>
-        Aim,
+        /// <summary>1/2 jumps that change direction (snap aim).</summary>
+        [Description("Jumps")]
+        Jumps,
 
-        /// <summary>Tapping speed: streams, bursts, fast doubles (the calculator's speed skill).</summary>
-        Speed,
+        /// <summary>Spaced moves that keep their direction: flowing jumps, curved spaced streams.</summary>
+        [Description("Flow aim")]
+        FlowAim,
 
-        /// <summary>Reading dense or low-approach patterns (the calculator's reading skill).</summary>
-        Reading,
+        /// <summary>Streams of 9+ notes.</summary>
+        [Description("Streams")]
+        Streams,
+
+        /// <summary>Streams with large spacing.</summary>
+        [Description("Spaced streams")]
+        SpacedStreams,
+
+        /// <summary>Bursts and fast 1/2 that need alternating.</summary>
+        [Description("Bursts / Alt")]
+        Alt,
+
+        /// <summary>Changing rhythms and odd snaps.</summary>
+        [Description("Finger control")]
+        FingerControl,
+
+        /// <summary>Sliders with varied velocity or repeats, rhythm changes around sliders.</summary>
+        [Description("Tech")]
+        Tech,
+
+        /// <summary>Fast short sliders, kicksliders, buzz sliders.</summary>
+        [Description("Sliders")]
+        Sliders,
+
+        /// <summary>Low approach rate with many objects on screen.</summary>
+        [Description("Low AR")]
+        LowAr,
+
+        /// <summary>High approach rate.</summary>
+        [Description("High AR")]
+        HighAr,
+
+        /// <summary>Very long streams.</summary>
+        [Description("Stamina")]
+        Stamina,
     }
 }

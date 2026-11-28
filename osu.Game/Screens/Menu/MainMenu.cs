@@ -161,7 +161,7 @@ namespace osu.Game.Screens.Menu
                                 skinEditor?.Show();
                             },
                             OnSolo = loadSongSelect,
-                            OnTraining = skillset => this.Push(new TrainingSession(skillset)),
+                            OnTraining = () => this.Push(new TrainingSession()),
                             OnMultiplayer = () => this.Push(new Multiplayer()),
                             OnQuickPlay = loadQuickPlay,
                             OnRankedPlay = loadRankedPlay,

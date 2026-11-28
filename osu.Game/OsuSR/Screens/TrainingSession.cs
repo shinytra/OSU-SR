@@ -41,9 +41,19 @@ namespace osu.Game.OsuSR.Screens
         public const double COUNTDOWN_DURATION = 3000;
 
         /// <summary>How many maps to try before giving up on finding a playable segment.</summary>
-        private const int max_attempts = 10;
+        /// <remarks>Some skillsets only exist in a few maps, so this is generous.</remarks>
+        private const int max_attempts = 25;
 
-        public readonly Skillset Skillset;
+        /// <summary>The skillsets picked last, so the next session starts with them.</summary>
+        private static Skillset[] lastSkillsets = { Skillset.Jumps };
+
+        /// <summary>
+        /// Whether each skillset is part of the session. With several, segments alternate between them.
+        /// </summary>
+        public readonly IReadOnlyDictionary<Skillset, BindableBool> SkillsetEnabled = Enum.GetValues<Skillset>().ToDictionary(s => s, _ => new BindableBool());
+
+        /// <summary>The skillsets currently part of the session, in menu order.</summary>
+        public Skillset[] SelectedSkillsets => SkillsetEnabled.Where(p => p.Value.Value).Select(p => p.Key).ToArray();
 
         public readonly BindableDouble MinimumStars = new BindableDouble(4) { MinValue = 0, MaxValue = 12, Precision = 0.1 };
         public readonly BindableDouble MaximumStars = new BindableDouble(6) { MinValue = 0, MaxValue = 12, Precision = 0.1 };
@@ -66,6 +76,8 @@ namespace osu.Game.OsuSR.Screens
         private MusicController musicController { get; set; } = null!;
 
         private Container setupPanel = null!;
+        private OsuSpriteText titleText = null!;
+        private RoundedButton startButton = null!;
         private OsuSpriteText statusText = null!;
         private OsuSpriteText lastResultText = null!;
         private OsuSpriteText countdownText = null!;
@@ -79,11 +91,13 @@ namespace osu.Game.OsuSR.Screens
         private SegmentPlayer? currentPlayer;
         private bool running;
 
-        /// <param name="skillset">The skillset to train.</param>
+        /// <param name="skillsets">The skillsets to train. Defaults to the ones picked last. They can be changed on the setup panel.</param>
         /// <param name="finder">Overrides how segments are found (for tests). Defaults to the osu! ruleset's finder.</param>
-        public TrainingSession(Skillset skillset, ISkillsetSegmentFinder? finder = null)
+        public TrainingSession(IEnumerable<Skillset>? skillsets = null, ISkillsetSegmentFinder? finder = null)
         {
-            Skillset = skillset;
+            foreach (var skillset in skillsets ?? lastSkillsets)
+                SkillsetEnabled[skillset].Value = true;
+
             finderOverride = finder;
         }
 
@@ -107,11 +121,10 @@ namespace osu.Game.OsuSR.Screens
                     Spacing = new Vector2(0, 15),
                     Children = new Drawable[]
                     {
-                        new OsuSpriteText
+                        titleText = new OsuSpriteText
                         {
                             Anchor = Anchor.TopCentre,
                             Origin = Anchor.TopCentre,
-                            Text = $"Session continue : {Skillset}",
                             Font = OsuFont.Default.With(size: 36, weight: FontWeight.Bold),
                         },
                         setupPanel = new Container
@@ -137,6 +150,25 @@ namespace osu.Game.OsuSR.Screens
                                     Spacing = new Vector2(0, 10),
                                     Children = new Drawable[]
                                     {
+                                        new OsuSpriteText
+                                        {
+                                            Text = "Skillsets (plusieurs = passages mélangés)",
+                                            Font = OsuFont.Default.With(size: 16, weight: FontWeight.SemiBold),
+                                            Margin = new MarginPadding { Horizontal = 20 },
+                                        },
+                                        new GridContainer
+                                        {
+                                            RelativeSizeAxes = Axes.X,
+                                            AutoSizeAxes = Axes.Y,
+                                            ColumnDimensions = new[] { new Dimension(), new Dimension() },
+                                            RowDimensions = Enumerable.Range(0, (SkillsetEnabled.Count + 1) / 2).Select(_ => new Dimension(GridSizeMode.AutoSize)).ToArray(),
+                                            // Every row needs both cells, so an odd count leaves an empty one.
+                                            Content = SkillsetEnabled.Chunk(2).Select(row => row.Select(p => (Drawable)new SettingsCheckbox
+                                            {
+                                                LabelText = p.Key.GetDescription(),
+                                                Current = p.Value,
+                                            }).Append(Empty()).Take(2).ToArray()).ToArray(),
+                                        },
                                         new SettingsSlider<double>
                                         {
                                             LabelText = "Étoiles minimum",
@@ -149,7 +181,7 @@ namespace osu.Game.OsuSR.Screens
                                             Current = MaximumStars,
                                             KeyboardStep = 0.1f,
                                         },
-                                        new RoundedButton
+                                        startButton = new RoundedButton
                                         {
                                             RelativeSizeAxes = Axes.X,
                                             Text = "Commencer",
@@ -183,6 +215,10 @@ namespace osu.Game.OsuSR.Screens
                 },
             };
 
+            foreach (var enabled in SkillsetEnabled.Values)
+                enabled.BindValueChanged(_ => updateSkillsets());
+            updateSkillsets();
+
             // Keep the range valid whichever slider is moved.
             MinimumStars.BindValueChanged(v =>
             {
@@ -192,6 +228,17 @@ namespace osu.Game.OsuSR.Screens
             {
                 if (MinimumStars.Value > v.NewValue) MinimumStars.Value = v.NewValue;
             });
+        }
+
+        private void updateSkillsets()
+        {
+            var selected = SelectedSkillsets;
+
+            if (selected.Length > 0)
+                lastSkillsets = selected;
+
+            titleText.Text = selected.Length == 0 ? "Session continue" : $"Session continue : {string.Join(" + ", selected.Select(s => s.GetDescription()))}";
+            startButton.Enabled.Value = selected.Length > 0;
         }
 
         public override void OnEntering(ScreenTransitionEvent e)
@@ -237,7 +284,7 @@ namespace osu.Game.OsuSR.Screens
 
         private void startSession()
         {
-            if (running)
+            if (running || SelectedSkillsets.Length == 0)
                 return;
 
             running = true;
@@ -271,10 +318,11 @@ namespace osu.Game.OsuSR.Screens
 
             double min = MinimumStars.Value;
             double max = MaximumStars.Value;
+            var skillsets = SelectedSkillsets;
 
             statusText.Text = "Recherche du prochain passage…";
 
-            Task.Run(() => findNextSegment(min, max, cancellation.Token), cancellation.Token).ContinueWith(t => Schedule(() =>
+            Task.Run(() => findNextSegment(skillsets, min, max, cancellation.Token), cancellation.Token).ContinueWith(t => Schedule(() =>
             {
                 if (cancellation.IsCancellationRequested || !running)
                     return;
@@ -289,7 +337,7 @@ namespace osu.Game.OsuSR.Screens
 
                 if (t.GetResultSafely() == null)
                 {
-                    statusText.Text = $"Aucune map osu! trouvée entre {min:N1} et {max:N1} étoiles.";
+                    statusText.Text = $"Aucun passage {string.Join(" / ", skillsets.Select(s => s.GetDescription()))} trouvé dans les maps entre {min:N1} et {max:N1} étoiles.";
                     stopSession();
                     return;
                 }
@@ -299,7 +347,7 @@ namespace osu.Game.OsuSR.Screens
             }), TaskContinuationOptions.None);
         }
 
-        private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(double minStars, double maxStars, CancellationToken cancellationToken)
+        private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(Skillset[] skillsets, double minStars, double maxStars, CancellationToken cancellationToken)
         {
             var pool = realm.Run(r => r.All<BeatmapInfo>()
                                        .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
@@ -316,6 +364,9 @@ namespace osu.Game.OsuSR.Screens
 
             // Avoid replaying the map that was just played.
             Guid? lastPlayed = results.LastOrDefault()?.Segment.BeatmapID;
+
+            // With several skillsets, prefer the ones played least recently, so segments alternate between them.
+            var preference = skillsets.OrderBy(s => results.FindLastIndex(r => r.Segment.Skillset == s)).ThenBy(_ => Random.Shared.Next()).ToArray();
 
             for (int attempt = 0; attempt < max_attempts; attempt++)
             {
@@ -335,9 +386,10 @@ namespace osu.Game.OsuSR.Screens
 
                 try
                 {
-                    var segments = finder.FindSegments(working, Skillset, 3, cancellationToken);
+                    var found = finder.FindSegments(working, skillsets, 3, cancellationToken);
+                    var skillset = preference.FirstOrDefault(found.ContainsKey);
 
-                    if (segments.Count == 0)
+                    if (!found.TryGetValue(skillset, out var segments))
                         continue;
 
                     // Mostly the hardest part, sometimes one of the next ones, for variety.
@@ -366,7 +418,7 @@ namespace osu.Game.OsuSR.Screens
             ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = working);
 
             var info = working.BeatmapInfo;
-            statusText.Text = $"{info.Metadata.Artist} - {info.Metadata.Title} [{info.DifficultyName}] ({info.StarRating:N2}★)"
+            statusText.Text = $"{segment.Skillset.GetDescription()}  ·  {info.Metadata.Artist} - {info.Metadata.Title} [{info.DifficultyName}] ({info.StarRating:N2}★)"
                               + $"  ·  {formatTime(segment.FirstObjectTime)} – {formatTime(segment.EndTime)}";
 
             // Fade the next map's music in from just before the segment, so the transition is continuous.

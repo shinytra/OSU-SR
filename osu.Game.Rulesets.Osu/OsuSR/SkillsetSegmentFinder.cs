@@ -12,18 +12,28 @@ using osu.Game.Rulesets.Difficulty.Skills;
 using osu.Game.Rulesets.Mods;
 using osu.Game.Rulesets.Objects;
 using osu.Game.Rulesets.Osu.Difficulty;
+using osu.Game.Rulesets.Osu.Difficulty.Evaluators.Aim;
+using osu.Game.Rulesets.Osu.Difficulty.Evaluators.Speed;
 using osu.Game.Rulesets.Osu.Difficulty.Skills;
 
 namespace osu.Game.Rulesets.Osu.OsuSR
 {
     /// <summary>
-    /// Finds the hardest parts of a beatmap for each <see cref="Skillset"/>,
-    /// using the per-object difficulties computed by the osu!standard difficulty calculator.
+    /// Finds the hardest parts of a beatmap for each <see cref="Skillset"/>.
     /// </summary>
+    /// <remarks>
+    /// Every note is first labelled with the patterns it belongs to (<see cref="PatternClassifier"/>).
+    /// A segment then scores, for a skillset, the difficulty of its matching notes per second (from the lazer evaluator that fits the skillset),
+    /// times its purity: the share of its notes that match. Segments that aren't pure enough are skipped,
+    /// so a very hard mixed part doesn't win every skillset.
+    /// </remarks>
     public class SkillsetSegmentFinder : ISkillsetSegmentFinder
     {
-        /// <summary>Target length (ms) of the hit object window of a segment.</summary>
-        public double SegmentLength { get; init; } = 20_000;
+        /// <summary>Candidate lengths (ms) of a segment's hit object window. The best scoring one wins.</summary>
+        public IReadOnlyList<double> SegmentLengths { get; init; } = new[] { 10_000.0, 15_000, 20_000 };
+
+        /// <summary>Candidate lengths (ms) for <see cref="Skillset.Stamina"/>, which needs longer segments.</summary>
+        public IReadOnlyList<double> StaminaSegmentLengths { get; init; } = new[] { 20_000.0, 30_000 };
 
         /// <summary>How long (ms) playback starts before the first object of a segment.</summary>
         public double LeadIn { get; init; } = 2_000;
@@ -31,8 +41,67 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         /// <summary>Minimum gap (ms) between two segments picked from the same map.</summary>
         public double MinimumGap { get; init; } = 2_000;
 
+        /// <summary>Whether segment edges move to the nearest bar lines, so segments start and end with the music's phrases.</summary>
+        public bool SnapToBars { get; init; } = true;
+
+        /// <summary>How far (ms) an edge may move when snapping to a bar line.</summary>
+        public double MaximumSnap { get; init; } = 4_000;
+
+        /// <summary>Overrides every skillset's minimum purity (for tests).</summary>
+        public double? MinimumPurity { get; init; }
+
+        /// <summary>Minimum number of matching notes in a segment.</summary>
+        public int MinimumMatchingObjects { get; init; } = 8;
+
+        /// <summary>
+        /// Minimum share of a segment's notes that must match the skillset. Lower for skillsets whose patterns are naturally mixed with others.
+        /// </summary>
+        public static double DefaultMinimumPurity(Skillset skillset) => skillset switch
+        {
+            Skillset.Jumps => 0.5,
+            Skillset.FlowAim => 0.4,
+            Skillset.Streams => 0.6,
+            Skillset.SpacedStreams => 0.5,
+            Skillset.Alt => 0.35,
+            Skillset.FingerControl => 0.3,
+            Skillset.Tech => 0.3,
+            Skillset.Sliders => 0.25,
+            Skillset.LowAr => 0.7,
+            Skillset.HighAr => 0.8,
+            Skillset.Stamina => 0.6,
+            _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
+        };
+
+        /// <summary>The note patterns that count for a skillset.</summary>
+        public static NotePattern PatternsFor(Skillset skillset) => skillset switch
+        {
+            Skillset.Jumps => NotePattern.Jump,
+            Skillset.FlowAim => NotePattern.FlowAim,
+            Skillset.Streams => NotePattern.Stream,
+            Skillset.SpacedStreams => NotePattern.SpacedStream,
+            Skillset.Alt => NotePattern.Alt,
+            Skillset.FingerControl => NotePattern.FingerControl,
+            Skillset.Tech => NotePattern.Tech,
+            Skillset.Sliders => NotePattern.FastSlider,
+            Skillset.LowAr => NotePattern.LowAr,
+            Skillset.HighAr => NotePattern.HighAr,
+            Skillset.Stamina => NotePattern.Deathstream,
+            _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
+        };
+
         IReadOnlyList<MapSegment> ISkillsetSegmentFinder.FindSegments(IWorkingBeatmap beatmap, Skillset skillset, int maxSegments, CancellationToken cancellationToken)
             => FindSegments(beatmap, skillset, maxSegments, null, cancellationToken);
+
+        public IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindSegments(IWorkingBeatmap beatmap, IEnumerable<Skillset> skillsets, int maxSegments,
+                                                                                     CancellationToken cancellationToken = default)
+        {
+            var profile = Analyse(beatmap, null, cancellationToken);
+
+            return skillsets.Distinct()
+                            .Select(s => (Skillset: s, Segments: FindSegments(profile, s, maxSegments)))
+                            .Where(r => r.Segments.Count > 0)
+                            .ToDictionary(r => r.Skillset, r => r.Segments);
+        }
 
         public Mod CreateSegmentMod(MapSegment segment) => new OsuModSegment
         {
@@ -41,7 +110,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         };
 
         /// <summary>
-        /// Computes per-object difficulties for every skillset.
+        /// Labels every note and computes its difficulty for every skillset.
         /// </summary>
         public SkillsetProfile Analyse(IWorkingBeatmap beatmap, IEnumerable<Mod>? mods = null, CancellationToken cancellationToken = default)
         {
@@ -52,6 +121,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         /// <summary>
         /// Returns up to <paramref name="maxSegments"/> non-overlapping segments, hardest first, for the given skillset.
+        /// Maps without a part that is pure enough for the skillset return no segment.
         /// </summary>
         public IReadOnlyList<MapSegment> FindSegments(IWorkingBeatmap beatmap, Skillset skillset, int maxSegments = 3, IEnumerable<Mod>? mods = null,
                                                       CancellationToken cancellationToken = default)
@@ -67,30 +137,41 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             if (objects.Count == 0 || maxSegments <= 0)
                 return Array.Empty<MapSegment>();
 
-            var prefixSums = Enum.GetValues<Skillset>().ToDictionary(s => s, s => prefixSum(profile.Difficulties[s]));
+            var sums = Enum.GetValues<Skillset>().ToDictionary(s => s, s => new SkillsetSums(profile, s));
+            var own = sums[skillset];
+            double minimumPurity = MinimumPurity ?? DefaultMinimumPurity(skillset);
+            var lengths = skillset == Skillset.Stamina ? StaminaSegmentLengths : SegmentLengths;
 
-            // One candidate window per starting object: every object that starts within SegmentLength of it.
-            var candidates = new List<(int First, int Last, double Score)>();
-            int last = 0;
+            var candidates = new List<(int First, int Last, double Length, double Score)>();
 
-            for (int first = 0; first < objects.Count; first++)
+            foreach (double length in lengths)
             {
-                last = Math.Max(last, first);
+                int last = 0;
 
-                while (last + 1 < objects.Count && objects[last + 1].StartTime - objects[first].StartTime <= SegmentLength)
-                    last++;
+                for (int first = 0; first < objects.Count; first++)
+                {
+                    last = Math.Max(last, first);
 
-                candidates.Add((first, last, density(prefixSums[skillset], first, last)));
+                    while (last + 1 < objects.Count && objects[last + 1].StartTime - objects[first].StartTime <= length)
+                        last++;
+
+                    if (own.Matching(first, last) < MinimumMatchingObjects || own.Purity(first, last) < minimumPurity)
+                        continue;
+
+                    // Slightly favour longer windows, so a long pure part isn't cut into its densest 10 seconds.
+                    double score = own.Score(first, last, length) * Math.Pow(length / 20_000, 0.3);
+                    candidates.Add((first, last, length, score));
+                }
             }
 
             var picked = new List<MapSegment>();
 
-            foreach (var (first, lastIndex, _) in candidates.OrderByDescending(c => c.Score))
+            foreach (var (first, last, length, score) in candidates.OrderByDescending(c => c.Score))
             {
                 if (picked.Count >= maxSegments)
                     break;
 
-                var segment = createSegment(first, lastIndex);
+                var segment = createSegment(first, last, length, score);
 
                 if (picked.Any(p => segment.StartTime < p.EndTime + MinimumGap && p.StartTime < segment.EndTime + MinimumGap))
                     continue;
@@ -100,32 +181,102 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
             return picked;
 
-            MapSegment createSegment(int first, int lastIndex) => new MapSegment
+            MapSegment createSegment(int first, int last, double length, double score)
             {
-                Skillset = skillset,
-                StartTime = Math.Max(0, objects[first].StartTime - LeadIn),
-                FirstObjectTime = objects[first].StartTime,
-                EndTime = objects[lastIndex].GetEndTime(),
-                ObjectCount = lastIndex - first + 1,
-                Scores = prefixSums.ToDictionary(p => p.Key, p => density(p.Value, first, lastIndex)),
-            };
+                var scores = sums.ToDictionary(p => p.Key, p => p.Value.Score(first, last, length));
+                scores[skillset] = score;
+                double purity = own.Purity(first, last);
 
-            double density(double[] sums, int first, int lastIndex)
-            {
-                // Divide by the full window length rather than the actual span, so that sparse windows don't get inflated scores.
-                double seconds = Math.Max(SegmentLength, objects[lastIndex].StartTime - objects[first].StartTime) / 1000;
-                return (sums[lastIndex + 1] - sums[first]) / seconds;
+                if (SnapToBars && profile.Beatmap != null)
+                    (first, last) = snapToBars(profile, first, last);
+
+                return new MapSegment
+                {
+                    Skillset = skillset,
+                    StartTime = Math.Max(0, objects[first].StartTime - LeadIn),
+                    FirstObjectTime = objects[first].StartTime,
+                    EndTime = objects[last].GetEndTime(),
+                    ObjectCount = last - first + 1,
+                    Scores = scores,
+                    Purity = purity,
+                };
             }
         }
 
-        private static double[] prefixSum(IReadOnlyList<double> values)
+        /// <summary>
+        /// Moves the first object back to the start of its bar, and the last object forward to the next bar line (included, so the segment ends on a downbeat).
+        /// </summary>
+        private (int First, int Last) snapToBars(SkillsetProfile profile, int first, int last)
         {
-            double[] sums = new double[values.Count + 1];
+            const double leniency = 5;
+            var objects = profile.Objects;
+            var controlPoints = profile.Beatmap!.ControlPointInfo;
 
-            for (int i = 0; i < values.Count; i++)
-                sums[i + 1] = sums[i] + values[i];
+            double firstStart = objects[first].StartTime;
+            double barStart = Math.Max(barLine(firstStart, false), firstStart - MaximumSnap);
 
-            return sums;
+            while (first > 0 && objects[first - 1].StartTime >= barStart - leniency)
+                first--;
+
+            double lastEnd = objects[last].GetEndTime();
+            double barEnd = Math.Min(barLine(lastEnd, true), lastEnd + MaximumSnap);
+
+            while (last + 1 < objects.Count && objects[last + 1].StartTime <= barEnd + leniency)
+                last++;
+
+            return (first, last);
+
+            double barLine(double time, bool next)
+            {
+                var timingPoint = controlPoints.TimingPointAt(time);
+                double barLength = timingPoint.BeatLength * timingPoint.TimeSignature.Numerator;
+
+                if (barLength <= 0)
+                    return time;
+
+                double bars = (time - timingPoint.Time) / barLength;
+                double index = next ? Math.Ceiling(bars - 1e-6) : Math.Floor(bars + 1e-6);
+                return timingPoint.Time + index * barLength;
+            }
+        }
+
+        /// <summary>
+        /// Prefix sums of a skillset's matching notes and their difficulties, to score any window in constant time.
+        /// </summary>
+        private class SkillsetSums
+        {
+            private readonly double[] difficulty;
+            private readonly int[] matching;
+            private readonly IReadOnlyList<HitObject> objects;
+
+            public SkillsetSums(SkillsetProfile profile, Skillset skillset)
+            {
+                objects = profile.Objects;
+                var patterns = PatternsFor(skillset);
+                var values = profile.Difficulties[skillset];
+
+                difficulty = new double[objects.Count + 1];
+                matching = new int[objects.Count + 1];
+
+                for (int i = 0; i < objects.Count; i++)
+                {
+                    bool matches = (profile.Notes[i].Pattern & patterns) != 0;
+                    difficulty[i + 1] = difficulty[i] + (matches ? values[i] : 0);
+                    matching[i + 1] = matching[i] + (matches ? 1 : 0);
+                }
+            }
+
+            public int Matching(int first, int last) => matching[last + 1] - matching[first];
+
+            public double Purity(int first, int last) => (double)Matching(first, last) / (last - first + 1);
+
+            /// <summary>Difficulty of the matching notes per second, times purity.</summary>
+            public double Score(int first, int last, double length)
+            {
+                // Divide by the full window length rather than the actual span, so that sparse windows don't get inflated scores.
+                double seconds = Math.Max(length, objects[last].StartTime - objects[first].StartTime) / 1000;
+                return (difficulty[last + 1] - difficulty[first]) / seconds * Purity(first, last);
+            }
         }
 
         /// <summary>
@@ -135,6 +286,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         {
             private Skill[] skills = Array.Empty<Skill>();
             private ObjectRecorder recorder = null!;
+            private IBeatmap? playableBeatmap;
 
             public ProfilingDifficultyCalculator(IWorkingBeatmap beatmap)
                 : base(new OsuRuleset().RulesetInfo, beatmap)
@@ -143,6 +295,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
             protected override Skill[] CreateSkills(IBeatmap beatmap, Mod[] mods)
             {
+                playableBeatmap = beatmap;
                 recorder = new ObjectRecorder(mods);
                 skills = base.CreateSkills(beatmap, mods);
 
@@ -152,22 +305,49 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
             public SkillsetProfile CreateProfile()
             {
-                var aim = skills.OfType<Aim>().Single(a => a.IncludeSliders);
-                var speed = skills.OfType<Speed>().Single();
-                var reading = skills.OfType<Reading>().Single();
+                var objects = recorder.Objects;
 
-                return new SkillsetProfile(recorder.Objects.Select(o => o.BaseObject).ToArray(), new Dictionary<Skillset, IReadOnlyList<double>>
+                if (playableBeatmap == null || objects.Count == 0)
                 {
-                    [Skillset.Aim] = aim.GetObjectDifficulties(),
-                    [Skillset.Speed] = speed.GetObjectDifficulties(),
-                    [Skillset.Reading] = reading.GetObjectDifficulties(),
-                });
+                    var empty = Enum.GetValues<Skillset>().ToDictionary(s => s, _ => (IReadOnlyList<double>)Array.Empty<double>());
+                    return new SkillsetProfile(Array.Empty<HitObject>(), empty, Array.Empty<NoteFeatures>(), playableBeatmap);
+                }
+
+                var aim = skills.OfType<Aim>().Single(a => a.IncludeSliders).GetObjectDifficulties();
+                var aimNoSliders = skills.OfType<Aim>().Single(a => !a.IncludeSliders).GetObjectDifficulties();
+                var speed = skills.OfType<Speed>().Single().GetObjectDifficulties();
+                var reading = skills.OfType<Reading>().Single().GetObjectDifficulties();
+
+                var notes = PatternClassifier.Classify(playableBeatmap, objects);
+
+                return new SkillsetProfile(objects.Select(o => o.BaseObject).ToArray(), new Dictionary<Skillset, IReadOnlyList<double>>
+                {
+                    [Skillset.Jumps] = recorder.Snap,
+                    [Skillset.FlowAim] = recorder.Flow,
+                    [Skillset.Streams] = speed,
+                    [Skillset.SpacedStreams] = recorder.Agility,
+                    [Skillset.Alt] = speed,
+                    [Skillset.FingerControl] = speed.Select((s, i) => s * recorder.Rhythm[i]).ToArray(),
+                    [Skillset.Tech] = aim.Select((a, i) => a * recorder.Rhythm[i]).ToArray(),
+                    [Skillset.Sliders] = aim.Select((a, i) => Math.Max(0, a - aimNoSliders[i])).ToArray(),
+                    [Skillset.LowAr] = reading,
+                    [Skillset.HighAr] = aim.Select((a, i) => a + speed[i]).ToArray(),
+                    [Skillset.Stamina] = speed,
+                }, notes, playableBeatmap);
             }
         }
 
+        /// <summary>
+        /// Keeps every processed object, and the raw values of the evaluators that the aim and speed skills combine,
+        /// so each skillset can use the one that fits it.
+        /// </summary>
         private class ObjectRecorder : Skill
         {
             public readonly List<DifficultyHitObject> Objects = new List<DifficultyHitObject>();
+            public readonly List<double> Snap = new List<double>();
+            public readonly List<double> Flow = new List<double>();
+            public readonly List<double> Agility = new List<double>();
+            public readonly List<double> Rhythm = new List<double>();
 
             public ObjectRecorder(Mod[] mods)
                 : base(mods)
@@ -177,6 +357,12 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             protected override double ProcessInternal(DifficultyHitObject current)
             {
                 Objects.Add(current);
+
+                // Same multipliers as the aim skill, so the values are on the scale lazer uses.
+                Snap.Add(SnapAimEvaluator.EvaluateDifficultyOf(current, true) * 70.9);
+                Flow.Add(FlowAimEvaluator.EvaluateDifficultyOf(current, true) * 242.0);
+                Agility.Add(AgilityEvaluator.EvaluateDifficultyOf(current) * 2.35);
+                Rhythm.Add(RhythmEvaluator.EvaluateDifficultyOf(current));
                 return 0;
             }
 
@@ -185,9 +371,13 @@ namespace osu.Game.Rulesets.Osu.OsuSR
     }
 
     /// <summary>
-    /// Per-object difficulties of a beatmap for every <see cref="Skillset"/>.
-    /// <see cref="Difficulties"/>[skillset][i] is the difficulty of <see cref="Objects"/>[i].
+    /// Per-object data of a beatmap for every <see cref="Skillset"/>.
+    /// <see cref="Difficulties"/>[skillset][i] is the difficulty of <see cref="Objects"/>[i] for that skillset, and <see cref="Notes"/>[i] its patterns.
     /// </summary>
     /// <remarks>The first hit object of a map has no difficulty value, so it is not included.</remarks>
-    public record SkillsetProfile(IReadOnlyList<HitObject> Objects, IReadOnlyDictionary<Skillset, IReadOnlyList<double>> Difficulties);
+    public record SkillsetProfile(
+        IReadOnlyList<HitObject> Objects,
+        IReadOnlyDictionary<Skillset, IReadOnlyList<double>> Difficulties,
+        IReadOnlyList<NoteFeatures> Notes,
+        IBeatmap? Beatmap);
 }

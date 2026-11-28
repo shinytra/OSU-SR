@@ -30,16 +30,21 @@ namespace osu.Game.OsuSR
         public required int ObjectCount { get; init; }
 
         /// <summary>
-        /// Difficulty density of the segment for each skillset: the sum of per-object difficulties divided by the segment length in seconds.
+        /// Score of the segment for each skillset: the difficulty of the notes that match the skillset's patterns, per second, times the share of matching notes.
         /// Values of the same skillset are comparable across maps; values of different skillsets are on different scales.
         /// </summary>
         public required IReadOnlyDictionary<Skillset, double> Scores { get; init; }
+
+        /// <summary>
+        /// Share (0 to 1) of the segment's notes that match its <see cref="Skillset"/>'s patterns.
+        /// </summary>
+        public double Purity { get; init; } = 1;
 
         /// <summary>The score of this segment for its own <see cref="Skillset"/>.</summary>
         public double Score => Scores[Skillset];
 
         public double Duration => EndTime - StartTime;
 
-        public override string ToString() => $"{Skillset} {StartTime:N0}-{EndTime:N0}ms ({ObjectCount} objects, score {Score:N2})";
+        public override string ToString() => $"{Skillset} {StartTime:N0}-{EndTime:N0}ms ({ObjectCount} objects, score {Score:N2}, purity {Purity:P0})";
     }
 }
