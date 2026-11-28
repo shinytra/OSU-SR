@@ -72,6 +72,7 @@ namespace osu.Game.OsuSR.Screens
 
         private IReadOnlyList<Mod> previousMods = Array.Empty<Mod>();
         private RulesetInfo osuRuleset = null!;
+        private readonly ISkillsetSegmentFinder? finderOverride;
         private ISkillsetSegmentFinder finder = null!;
 
         private CancellationTokenSource? preparationCancellation;
@@ -83,7 +84,7 @@ namespace osu.Game.OsuSR.Screens
         public TrainingSession(Skillset skillset, ISkillsetSegmentFinder? finder = null)
         {
             Skillset = skillset;
-            this.finder = finder!;
+            finderOverride = finder;
         }
 
         protected override BackgroundScreen CreateBackground() => new BackgroundScreenBeatmap(Beatmap.Value);
@@ -92,8 +93,7 @@ namespace osu.Game.OsuSR.Screens
         private void load(OsuColour colours)
         {
             osuRuleset = rulesets.GetRuleset("osu") ?? throw new InvalidOperationException("The osu! ruleset is not available.");
-            // ReSharper disable once NullCoalescingConditionIsAlwaysNotNullAccordingToAPIContract
-            finder ??= ((IHasSkillsetSegments)osuRuleset.CreateInstance()).CreateSkillsetSegmentFinder();
+            finder = finderOverride ?? ((IHasSkillsetSegments)osuRuleset.CreateInstance()).CreateSkillsetSegmentFinder();
 
             InternalChildren = new Drawable[]
             {
@@ -218,7 +218,7 @@ namespace osu.Game.OsuSR.Screens
             }
 
             results.Add(player.Result);
-            lastResultText.Text = $"Dernier passage : {player.Result.Accuracy:P2}, combo {player.Result.MaxCombo}x  ·  {results.Count} passage(s), précision moyenne {results.Average(r => r.Accuracy):P2}";
+            lastResultText.Text = $"Dernier passage : {player.Result.Accuracy:P2}, combo {player.Result.MaxCombo}x, score {player.Result.TotalScore:N0}  ·  {results.Count} passage(s), précision moyenne {results.Average(r => r.Accuracy):P2}";
 
             prepareNextSegment();
         }
