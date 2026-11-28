@@ -30,6 +30,12 @@ namespace osu.Game.OsuSR
         public required int ObjectCount { get; init; }
 
         /// <summary>
+        /// Star rating of the segment alone (the map with everything else removed), when it was calculated.
+        /// It is usually lower than the map's own, since a short part has fewer difficult notes to add up.
+        /// </summary>
+        public double? StarRating { get; init; }
+
+        /// <summary>
         /// Score of the segment for each skillset: the difficulty of the notes that match the skillset's patterns, per second, times the share of matching notes.
         /// Values of the same skillset are comparable across maps; values of different skillsets are on different scales.
         /// </summary>
@@ -45,6 +51,6 @@ namespace osu.Game.OsuSR
 
         public double Duration => EndTime - StartTime;
 
-        public override string ToString() => $"{Skillset} {StartTime:N0}-{EndTime:N0}ms ({ObjectCount} objects, score {Score:N2}, purity {Purity:P0})";
+        public override string ToString() => $"{Skillset} {StartTime:N0}-{EndTime:N0}ms ({ObjectCount} objects, score {Score:N2}, purity {Purity:P0}{(StarRating is double stars ? $", {stars:N2}★" : string.Empty)})";
     }
 }

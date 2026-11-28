@@ -42,7 +42,15 @@ namespace osu.Game.OsuSR.Screens
 
         /// <summary>How many maps to try before giving up on finding a playable segment.</summary>
         /// <remarks>Some skillsets only exist in a few maps, so this is generous.</remarks>
-        private const int max_attempts = 25;
+        private const int max_attempts = 40;
+
+        /// <summary>
+        /// The star range applies to the played segment, which is usually easier than its map.
+        /// Maps are pre-selected with a wider range, then each candidate segment's own star rating decides.
+        /// </summary>
+        private const double map_stars_lower_factor = 0.6;
+
+        private const double map_stars_upper_factor = 1.8;
 
         /// <summary>The skillsets picked last, so the next session starts with them.</summary>
         private static Skillset[] lastSkillsets = { Skillset.Jumps };
@@ -171,13 +179,13 @@ namespace osu.Game.OsuSR.Screens
                                         },
                                         new SettingsSlider<double>
                                         {
-                                            LabelText = "Étoiles minimum",
+                                            LabelText = "Étoiles minimum (du passage)",
                                             Current = MinimumStars,
                                             KeyboardStep = 0.1f,
                                         },
                                         new SettingsSlider<double>
                                         {
-                                            LabelText = "Étoiles maximum",
+                                            LabelText = "Étoiles maximum (du passage)",
                                             Current = MaximumStars,
                                             KeyboardStep = 0.1f,
                                         },
@@ -354,7 +362,7 @@ namespace osu.Game.OsuSR.Screens
                                                + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
                                                + $" AND {nameof(BeatmapInfo.Hidden)} == false"
                                                + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
-                                           osuRuleset.ShortName, minStars, maxStars)
+                                           osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor)
                                        .AsEnumerable()
                                        .Select(b => b.ID)
                                        .ToList());
@@ -387,14 +395,23 @@ namespace osu.Game.OsuSR.Screens
                 try
                 {
                     var found = finder.FindSegments(working, skillsets, 3, cancellationToken);
-                    var skillset = preference.FirstOrDefault(found.ContainsKey);
 
-                    if (!found.TryGetValue(skillset, out var segments))
-                        continue;
+                    // The first skillset in preference order that has a segment whose own star rating is in range.
+                    foreach (var skillset in preference)
+                    {
+                        if (!found.TryGetValue(skillset, out var segments))
+                            continue;
 
-                    // Mostly the hardest part, sometimes one of the next ones, for variety.
-                    var segment = segments[Random.Shared.Next(segments.Count)];
-                    return (working, segment with { BeatmapID = id });
+                        var inRange = segments.Select(s => s with { BeatmapID = id, StarRating = finder.CalculateStarRating(working, s, cancellationToken) })
+                                              .Where(s => s.StarRating >= minStars && s.StarRating <= maxStars)
+                                              .ToList();
+
+                        if (inRange.Count == 0)
+                            continue;
+
+                        // Mostly the hardest part, sometimes one of the next ones, for variety.
+                        return (working, inRange[Random.Shared.Next(inRange.Count)]);
+                    }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -418,7 +435,7 @@ namespace osu.Game.OsuSR.Screens
             ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = working);
 
             var info = working.BeatmapInfo;
-            statusText.Text = $"{segment.Skillset.GetDescription()}  ·  {info.Metadata.Artist} - {info.Metadata.Title} [{info.DifficultyName}] ({info.StarRating:N2}★)"
+            statusText.Text = $"{segment.Skillset.GetDescription()}  ·  {info.Metadata.Artist} - {info.Metadata.Title} [{info.DifficultyName}] (passage {segment.StarRating:N2}★, map {info.StarRating:N2}★)"
                               + $"  ·  {formatTime(segment.FirstObjectTime)} – {formatTime(segment.EndTime)}";
 
             // Fade the next map's music in from just before the segment, so the transition is continuous.
