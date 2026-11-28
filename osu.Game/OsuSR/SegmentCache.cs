@@ -18,7 +18,7 @@ namespace osu.Game.OsuSR
     public class SegmentCache
     {
         /// <summary>Changes whenever the detection changes, which makes everything saved before it obsolete.</summary>
-        public const int VERSION = 2;
+        public const int VERSION = 4;
 
         private const string directory = "osu-sr";
         private const string cache_file = "segment-cache.json";
@@ -28,8 +28,13 @@ namespace osu.Game.OsuSR
         private readonly Dictionary<string, MapSegment[]> entries = new Dictionary<string, MapSegment[]>();
         private bool dirty;
 
-        public SegmentCache(Storage storage)
+        private readonly string signature;
+
+        /// <param name="storage">Where the cache file is kept.</param>
+        /// <param name="signature">Identifies the skillset weights in force (<see cref="SkillsetWeights.Signature"/>): other weights give other results.</param>
+        public SegmentCache(Storage storage, string signature = "")
         {
+            this.signature = signature;
             this.storage = storage.GetStorageForDirectory(directory);
             load();
         }
@@ -97,7 +102,7 @@ namespace osu.Game.OsuSR
             }
         }
 
-        private static string key(string mapHash, Skillset skillset, double purityAdjustment) => $"{VERSION}|{mapHash}|{(int)skillset}|{purityAdjustment:0.00}";
+        private string key(string mapHash, Skillset skillset, double purityAdjustment) => $"{VERSION}|{mapHash}|{(int)skillset}|{purityAdjustment:0.00}|{signature}";
 
         private void load()
         {

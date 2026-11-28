@@ -28,6 +28,9 @@ namespace osu.Game.Tests.Visual.OsuSR
             // Accept any part of the test map, whatever its patterns.
             MinimumPurity = 0,
             MinimumMatchingObjects = 0,
+
+            // The test map has no clear skillsets: don't keep any part out because of the ones it has.
+            SignificantShare = 2,
         };
 
         // Training sessions only use ranked, approved or loved maps.

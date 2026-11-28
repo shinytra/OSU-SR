@@ -37,6 +37,15 @@ namespace osu.Game.OsuSR
         /// </summary>
         double CalculateStarRating(IWorkingBeatmap beatmap, MapSegment segment, CancellationToken cancellationToken = default);
 
+        /// <summary>Weights that make the star ratings of different skillsets comparable when deciding which skillsets a part really has.</summary>
+        SkillsetWeights Weights { get; set; }
+
+        /// <summary>
+        /// Works out which skillsets each segment really has (a skillset needs a real share of the notes and a weighted star rating close to the hardest one's),
+        /// and the segment's star rating from those notes. Analyses the map once for all the segments.
+        /// </summary>
+        IReadOnlyList<MapSegment> RefineSegments(IWorkingBeatmap beatmap, IReadOnlyList<MapSegment> segments, CancellationToken cancellationToken = default);
+
         /// <summary>
         /// Creates the mod that restricts gameplay to the given segment.
         /// </summary>

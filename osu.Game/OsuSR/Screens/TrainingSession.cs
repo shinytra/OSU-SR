@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -74,6 +75,9 @@ namespace osu.Game.OsuSR.Screens
         public readonly IReadOnlyDictionary<Skillset, BindableBool> SkillsetEnabled = Enum.GetValues<Skillset>().ToDictionary(s => s, _ => new BindableBool());
 
         /// <summary>The skillsets currently part of the session, in menu order.</summary>
+        // Combined skillsets (jumps + streams...) have no checkbox: picking both of their parts is what asks for them.
+        private IReadOnlyList<KeyValuePair<Skillset, BindableBool>> pickableSkillsets => SkillsetEnabled.Where(p => !SkillsetCombinations.IsCombined(p.Key)).ToList();
+
         public Skillset[] SelectedSkillsets => SkillsetEnabled.Where(p => p.Value.Value).Select(p => p.Key).ToArray();
 
         public readonly BindableDouble MinimumStars = new BindableDouble(4) { MinValue = 0, MaxValue = 12, Precision = 0.1 };
@@ -139,6 +143,8 @@ namespace osu.Game.OsuSR.Screens
         private OsuSpriteText feedbackSummaryText = null!;
         private RoundedButton startButton = null!;
         private OsuSpriteText statusText = null!;
+        private OsuSpriteText indexText = null!;
+        private CancellationTokenSource? indexCancellation;
         private OsuSpriteText lastResultText = null!;
         private OsuSpriteText countdownText = null!;
 
@@ -176,8 +182,12 @@ namespace osu.Game.OsuSR.Screens
         {
             osuRuleset = rulesets.GetRuleset("osu") ?? throw new InvalidOperationException("The osu! ruleset is not available.");
             Feedback = new SegmentFeedbackStore(storage);
-            segmentCache = new SegmentCache(storage);
             finder = finderOverride ?? ((IHasSkillsetSegments)osuRuleset.CreateInstance()).CreateSkillsetSegmentFinder();
+
+            // The weights that make skillsets' star ratings comparable (editable in osu-sr/skillset-weights.json).
+            var weights = SkillsetWeights.Load(storage);
+            finder.Weights = weights;
+            segmentCache = new SegmentCache(storage, weights.Signature);
 
             InternalChildren = new Drawable[]
             {
@@ -231,9 +241,9 @@ namespace osu.Game.OsuSR.Screens
                                             RelativeSizeAxes = Axes.X,
                                             AutoSizeAxes = Axes.Y,
                                             ColumnDimensions = new[] { new Dimension(), new Dimension() },
-                                            RowDimensions = Enumerable.Range(0, (SkillsetEnabled.Count + 1) / 2).Select(_ => new Dimension(GridSizeMode.AutoSize)).ToArray(),
+                                            RowDimensions = Enumerable.Range(0, (pickableSkillsets.Count + 1) / 2).Select(_ => new Dimension(GridSizeMode.AutoSize)).ToArray(),
                                             // Every row needs both cells, so an odd count leaves an empty one.
-                                            Content = SkillsetEnabled.Chunk(2).Select(row => row.Select(p => (Drawable)new SettingsCheckbox
+                                            Content = pickableSkillsets.Chunk(2).Select(row => row.Select(p => (Drawable)new SettingsCheckbox
                                             {
                                                 LabelText = p.Key.GetDescription(),
                                                 Current = p.Value,
@@ -324,6 +334,13 @@ namespace osu.Game.OsuSR.Screens
                             Origin = Anchor.TopCentre,
                             Font = OsuFont.Default.With(size: 18),
                         },
+                        indexText = new OsuSpriteText
+                        {
+                            Anchor = Anchor.TopCentre,
+                            Origin = Anchor.TopCentre,
+                            Font = OsuFont.Default.With(size: 14),
+                            Alpha = 0.7f,
+                        },
                         lastResultText = new OsuSpriteText
                         {
                             Anchor = Anchor.TopCentre,
@@ -374,6 +391,7 @@ namespace osu.Game.OsuSR.Screens
         {
             base.OnEntering(e);
             previousMods = Mods.Value;
+            startIndexing();
         }
 
         public override void OnResuming(ScreenTransitionEvent e)
@@ -417,6 +435,7 @@ namespace osu.Game.OsuSR.Screens
         public override bool OnExiting(ScreenExitEvent e)
         {
             saveSegmentCache();
+            indexCancellation?.Cancel();
             preparationCancellation?.Cancel();
             restoreVolume();
             restoreMods();
@@ -526,7 +545,7 @@ namespace osu.Game.OsuSR.Screens
         }
 
         /// <summary>The maps a session may pick from: ranked, approved or loved osu! maps whose star rating can have a segment in range.</summary>
-        private List<(Guid ID, double Weight, double BPM)> loadPool(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, bool includeUnknown)
+        private List<(Guid ID, double Weight, double BPM, string Hash)> loadPool(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, bool includeUnknown)
         {
             string statuses = $"{nameof(BeatmapInfo.Status)} == $3 OR {nameof(BeatmapInfo.Status)} == $4 OR {nameof(BeatmapInfo.Status)} == $5"
                               + (includeUnknown ? $" OR {nameof(BeatmapInfo.Status)} == $6" : string.Empty);
@@ -540,7 +559,7 @@ namespace osu.Game.OsuSR.Screens
                                            osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor,
                                            (int)BeatmapOnlineStatus.Ranked, (int)BeatmapOnlineStatus.Approved, (int)BeatmapOnlineStatus.Loved, (int)BeatmapOnlineStatus.None)
                                        .AsEnumerable()
-                                       .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM))
+                                       .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM, b.MD5Hash))
                                        .ToList());
 
             Logger.Log($"OSU SR: {pool.Count} candidate maps for {minStars:N1}-{maxStars:N1}★ (unknown status {(includeUnknown ? "included" : "excluded")})");
@@ -574,10 +593,14 @@ namespace osu.Game.OsuSR.Screens
 
         // candidates: the maps to pick from (see loadPool). recentMaps: maps played lately, which are skipped as long as there are others.
         private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(
-            List<(Guid ID, double Weight, double BPM)> candidates, Skillset[] skillsets, double minStars, double maxStars, double? previousBpm, IReadOnlyCollection<Guid> recentMaps,
+            List<(Guid ID, double Weight, double BPM, string Hash)> candidates, Skillset[] skillsets, double minStars, double maxStars, double? previousBpm, IReadOnlyCollection<Guid> recentMaps,
             Skillset[] recentSkillsets, CancellationToken cancellationToken)
         {
             var pool = candidates;
+
+            // A part can have several skillsets: it is played if all of them are picked (so Jumps alone only gets pure jumps, and Jumps + Streams also gets mixed parts).
+            var allowed = SkillsetCombinations.Allowed(skillsets);
+            skillsets = SkillsetCombinations.SearchedFor(skillsets);
 
             if (pool.Count == 0)
                 return null;
@@ -599,6 +622,12 @@ namespace osu.Game.OsuSR.Screens
 
             // With several skillsets, prefer the ones played least recently, so segments alternate between them.
             var preference = skillsets.OrderBy(s => Array.LastIndexOf(recentSkillsets, s)).ThenBy(_ => Random.Shared.Next()).ToArray();
+
+            // Parts already analysed (see startIndexing) are looked up instead of tried: filter all of them, then pick one at random.
+            var indexed = pickFromIndex(pool, skillsets, allowed, minStars, maxStars, recentMaps, recentSkillsets);
+
+            if (indexed != null)
+                return indexed;
 
             // Every map is tried at most once, in a random order (the favoured ones first); the ones played lately come last, so a small library never runs dry.
             foreach (var id in tryOrder(pool, recentMaps).Take(max_attempts))
@@ -639,12 +668,12 @@ namespace osu.Game.OsuSR.Screens
                         // The star rating of a segment is calculated once, then remembered with it.
                         if (segments.Any(s => s.StarRating == null))
                         {
-                            segments = segments.Select(s => s.StarRating == null ? s with { StarRating = finder.CalculateStarRating(working, s, cancellationToken) } : s).ToList();
+                            segments = finder.RefineSegments(working, segments, cancellationToken);
                             segmentCache.Set(hash, skillset, adjustment, segments);
                         }
 
                         var inRange = segments.Select(s => s with { BeatmapID = id })
-                                              .Where(s => s.StarRating >= minStars && s.StarRating <= maxStars)
+                                              .Where(s => s.StarRating >= minStars && s.StarRating <= maxStars && SkillsetCombinations.IsEligible(s, allowed))
                                               .ToList();
 
                         if (inRange.Count == 0)
@@ -663,8 +692,176 @@ namespace osu.Game.OsuSR.Screens
             return null;
         }
 
+        /// <summary>
+        /// Picks a part among all the analysed ones that fit (skillsets, star range, tempo): maps not played lately and skillsets played least recently first.
+        /// Null if the analysed maps hold none, so the caller analyses more.
+        /// </summary>
+        private (WorkingBeatmap Beatmap, MapSegment Segment)? pickFromIndex(
+            List<(Guid ID, double Weight, double BPM, string Hash)> pool, Skillset[] searched, IReadOnlySet<Skillset> allowed, double minStars, double maxStars,
+            IReadOnlyCollection<Guid> recentMaps, Skillset[] recentSkillsets)
+        {
+            var candidates = new List<(Guid ID, double Weight, MapSegment Segment, bool Recent)>();
+            var adjustments = finder.PurityAdjustments;
+
+            foreach (var (id, weight, _, hash) in pool)
+            {
+                foreach (var skillset in searched)
+                {
+                    if (!segmentCache.TryGet(hash, skillset, adjustments.GetValueOrDefault(skillset), out var segments))
+                        continue;
+
+                    foreach (var segment in segments)
+                    {
+                        if (segment.StarRating is double stars && stars >= minStars && stars <= maxStars && SkillsetCombinations.IsEligible(segment, allowed))
+                            candidates.Add((id, weight, segment with { BeatmapID = id }, recentMaps.Contains(id)));
+                    }
+                }
+            }
+
+            if (candidates.Count == 0)
+                return null;
+
+            if (candidates.Any(c => !c.Recent))
+                candidates.RemoveAll(c => c.Recent);
+
+            // With several skillsets, the ones played least recently come first, so parts alternate between them.
+            int oldest = candidates.Min(c => Array.LastIndexOf(recentSkillsets, c.Segment.Skillset));
+            candidates.RemoveAll(c => Array.LastIndexOf(recentSkillsets, c.Segment.Skillset) != oldest);
+
+            double roll = Random.Shared.NextDouble() * candidates.Sum(c => c.Weight);
+            var picked = candidates[^1];
+
+            foreach (var candidate in candidates)
+            {
+                roll -= candidate.Weight;
+
+                if (roll < 0)
+                {
+                    picked = candidate;
+                    break;
+                }
+            }
+
+            var info = realm.Run(r => r.Find<BeatmapInfo>(picked.ID)?.Detach());
+            return info == null ? null : (beatmaps.GetWorkingBeatmap(info), picked.Segment);
+        }
+
+        /// <summary>
+        /// Analyses the whole library in the background (once: the results are kept on disk), so that picking a part is a lookup, not a search.
+        /// Maps in the chosen star range come first. Parts are also found on demand meanwhile, so playing never waits for it.
+        /// </summary>
+        private void startIndexing()
+        {
+            indexCancellation?.Cancel();
+            var cancellation = indexCancellation = new CancellationTokenSource();
+            bool includeUnknown = IncludeUnknownStatus.Value;
+            double min = MinimumStars.Value * map_stars_lower_factor;
+            double max = MaximumStars.Value * map_stars_upper_factor;
+
+            new Thread(() => runIndexing(includeUnknown, min, max, cancellation.Token))
+            {
+                Name = "OSU SR library index",
+                IsBackground = true,
+                Priority = ThreadPriority.BelowNormal,
+            }.Start();
+        }
+
+        private void runIndexing(bool includeUnknown, double min, double max, CancellationToken token)
+        {
+            try
+            {
+                var library = loadPool(Array.Empty<Skillset>(), 0, 30, false, includeUnknown);
+
+                // The maps whose stars can fit the chosen range first (the pool's star filter is by map, so this uses the map's own rating).
+                var stars = realm.Run(r => library.ToDictionary(p => p.ID, p => r.Find<BeatmapInfo>(p.ID)?.StarRating ?? 0));
+                var order = library.OrderBy(p => stars[p.ID] >= min && stars[p.ID] <= max ? 0 : 1).ThenBy(_ => Random.Shared.Next()).ToList();
+                var all = Enum.GetValues<Skillset>();
+
+                int done = 0;
+                var lastSave = Stopwatch.StartNew();
+
+                foreach (var entry in order)
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    var adjustments = finder.PurityAdjustments;
+                    var missing = all.Where(s => !segmentCache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
+
+                    if (missing.Length > 0 || needsStars(entry.Hash, all, adjustments))
+                    {
+                        try
+                        {
+                            var info = realm.Run(r => r.Find<BeatmapInfo>(entry.ID)?.Detach());
+
+                            if (info != null)
+                                indexMap(info, all, missing, adjustments, token);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            Logger.Log($"OSU SR: could not index a map ({ex.Message})");
+                        }
+                    }
+
+                    done++;
+
+                    if (done % 20 == 0 || done == order.Count)
+                        Schedule(() => indexText.Text = done == order.Count ? $"Bibliothèque indexée ({done} maps)" : $"Indexation de la bibliothèque : {done}/{order.Count} maps (une seule fois, tu peux jouer pendant ce temps)");
+
+                    if (lastSave.Elapsed.TotalSeconds > 60)
+                    {
+                        segmentCache.Save();
+                        lastSave.Restart();
+                    }
+                }
+
+                segmentCache.Save();
+            }
+            catch (OperationCanceledException)
+            {
+                // The session screen was left: what was analysed is kept.
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "OSU SR: indexing the library failed");
+            }
+        }
+
+        private bool needsStars(string hash, Skillset[] all, IReadOnlyDictionary<Skillset, double> adjustments)
+            => all.Any(s => segmentCache.TryGet(hash, s, adjustments.GetValueOrDefault(s), out var segments) && segments.Any(x => x.StarRating == null));
+
+        private void indexMap(BeatmapInfo info, Skillset[] all, Skillset[] missing, IReadOnlyDictionary<Skillset, double> adjustments, CancellationToken token)
+        {
+            var working = beatmaps.GetWorkingBeatmap(info);
+
+            if (missing.Length > 0)
+            {
+                var found = finder.FindSegments(working, missing, 3, token);
+
+                foreach (var skillset in missing)
+                    segmentCache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), found.TryGetValue(skillset, out var s) ? s : Array.Empty<MapSegment>());
+            }
+
+            // Rate everything that isn't yet in one go: the map is analysed once for all of its parts.
+            var pending = all.Select(s => (Skillset: s, Segments: segmentCache.TryGet(info.MD5Hash, s, adjustments.GetValueOrDefault(s), out var found) ? found : Array.Empty<MapSegment>()))
+                             .Where(p => p.Segments.Any(x => x.StarRating == null))
+                             .ToList();
+
+            if (pending.Count == 0)
+                return;
+
+            token.ThrowIfCancellationRequested();
+            var refined = finder.RefineSegments(working, pending.SelectMany(p => p.Segments).ToList(), token);
+            int index = 0;
+
+            foreach (var (skillset, segments) in pending)
+            {
+                segmentCache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), refined.Skip(index).Take(segments.Count).ToList());
+                index += segments.Count;
+            }
+        }
+
         /// <summary>The maps in a random order where heavier weights tend to come first, and the recently played ones at the end.</summary>
-        private static IEnumerable<Guid> tryOrder(IReadOnlyList<(Guid ID, double Weight, double BPM)> pool, IReadOnlyCollection<Guid> recentMaps)
+        private static IEnumerable<Guid> tryOrder(IReadOnlyList<(Guid ID, double Weight, double BPM, string Hash)> pool, IReadOnlyCollection<Guid> recentMaps)
         {
             var keyed = pool.Select(p => (p.ID, Key: -Math.Log(1 - Random.Shared.NextDouble()) / Math.Max(p.Weight, 1e-6), Recent: recentMaps.Contains(p.ID)));
             return keyed.OrderBy(k => k.Recent).ThenBy(k => k.Key).Select(k => k.ID);
@@ -756,7 +953,7 @@ namespace osu.Game.OsuSR.Screens
             bool includeUnknown = IncludeUnknownStatus.Value;
 
             // The candidates are looked up once for the whole series, not for each part.
-            List<(Guid ID, double Weight, double BPM)>? pool = null;
+            List<(Guid ID, double Weight, double BPM, string Hash)>? pool = null;
 
             SeriesPart? findNext(CancellationToken token)
             {

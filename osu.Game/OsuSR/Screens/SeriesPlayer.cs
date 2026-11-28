@@ -221,7 +221,7 @@ namespace osu.Game.OsuSR.Screens
 
             shownPart = index;
             var segment = parts[index].Segment;
-            partInfoText.Text = $"{segment.Skillset.GetDescription()} · {segment.Purity:P0} de ce type de notes · {segment.StarRating:N2}★";
+            partInfoText.Text = $"{(segment.Labels.Count > 0 ? string.Join(" + ", segment.Labels.Select(l => l.GetDescription())) : segment.Skillset.GetDescription())} · {segment.Purity:P0} de {segment.Skillset.GetDescription()} · {segment.StarRating:N2}★";
         }
 
         /// <summary>Accuracy under which the next parts get easier, and over which they get harder (adaptive difficulty).</summary>

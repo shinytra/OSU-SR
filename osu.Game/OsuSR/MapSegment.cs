@@ -46,6 +46,18 @@ namespace osu.Game.OsuSR
         /// </summary>
         public double Purity { get; init; } = 1;
 
+        /// <summary>
+        /// All the skillsets that make up a real part of the segment (at least a quarter of its notes), the one it was picked for included when it is one of them.
+        /// A session only plays a segment if all of them are picked. See <see cref="SkillsetCombinations"/>.
+        /// </summary>
+        public IReadOnlyList<Skillset> Labels { get; init; } = Array.Empty<Skillset>();
+
+        /// <summary>
+        /// Weighted star rating (see <see cref="SkillsetWeights"/>) of each label, from the notes that make it up alone, when it was calculated.
+        /// A label is only kept if it is hard enough next to the hardest one: 60 % jumps at 8★ and 40 % streams at 6★ is a jumps part.
+        /// </summary>
+        public IReadOnlyDictionary<Skillset, double>? LabelStars { get; init; }
+
         /// <summary>The score of this segment for its own <see cref="Skillset"/>.</summary>
         public double Score => Scores[Skillset];
 

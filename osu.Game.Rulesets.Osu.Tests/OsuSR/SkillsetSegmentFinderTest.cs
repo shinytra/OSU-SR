@@ -355,7 +355,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             };
 
             // (Purity is not what this checks: let any build-up and follow-up through.)
-            var extended = new SkillsetSegmentFinder { MinimumPurity = 0 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
+            var extended = new SkillsetSegmentFinder { MinimumPurity = 0, SignificantShare = 2 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
 
             // The build-up right before the hard part is included, the notes before the break are not.
             Assert.That(extended.FirstObjectTime, Is.EqualTo(20_000).Within(1));
@@ -390,12 +390,73 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
                 Scores = new Dictionary<Skillset, double> { [Skillset.Streams] = 1 },
             };
 
-            var strict = new SkillsetSegmentFinder { MinimumPurity = 0.8 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
-            var loose = new SkillsetSegmentFinder { MinimumPurity = 0 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
+            var strict = new SkillsetSegmentFinder { MinimumPurity = 0.8, SignificantShare = 2 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
+            var loose = new SkillsetSegmentFinder { MinimumPurity = 0, SignificantShare = 2 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
 
             Assert.That(strict.Purity, Is.GreaterThanOrEqualTo(0.8));
             Assert.That(strict.ObjectCount, Is.LessThan(loose.ObjectCount));
             Assert.That(strict.ObjectCount, Is.GreaterThanOrEqualTo(40));
+        }
+
+        [Test]
+        public void TestSegmentsListEverySkillsetThatIsARealPartOfThem()
+        {
+            // Jumps with a stream in the middle: both are a real part (a quarter of the notes or more).
+            var objects = squareJumps(0, 24).Concat(stream(24 * beat / 2, 24, 150)).ToList();
+            var segments = new SkillsetSegmentFinder { MinimumPurity = 0.4 }.FindSegments(createBeatmap(objects), Skillset.Jumps, 3);
+
+            Assert.That(segments, Is.Not.Empty);
+            Assert.That(segments[0].Labels, Does.Contain(Skillset.Jumps).And.Contain(Skillset.Streams));
+
+            var jumpsOnly = finder.FindSegments(createBeatmap(squareJumps(0, 40)), Skillset.Jumps, 3);
+            Assert.That(jumpsOnly, Is.Not.Empty);
+            Assert.That(jumpsOnly[0].Labels, Is.EqualTo(new[] { Skillset.Jumps }));
+        }
+
+        [Test]
+        public void TestPartsArePlayedOnlyIfAllTheirSkillsetsArePicked()
+        {
+            var mixed = new MapSegment
+            {
+                Skillset = Skillset.Jumps,
+                StartTime = 0,
+                FirstObjectTime = 2000,
+                EndTime = 10_000,
+                ObjectCount = 30,
+                Scores = new Dictionary<Skillset, double> { [Skillset.Jumps] = 1 },
+                Labels = new[] { Skillset.Jumps, Skillset.Streams },
+            };
+
+            Assert.That(SkillsetCombinations.IsEligible(mixed, SkillsetCombinations.Allowed(new[] { Skillset.Jumps })), Is.False);
+            Assert.That(SkillsetCombinations.IsEligible(mixed, SkillsetCombinations.Allowed(new[] { Skillset.Jumps, Skillset.Streams })), Is.True);
+            Assert.That(SkillsetCombinations.IsEligible(mixed, SkillsetCombinations.Allowed(new[] { Skillset.JumpsStreams })), Is.True);
+
+            // A part found for how it is played (stamina...) isn't kept out by the skillsets of its notes.
+            Assert.That(SkillsetCombinations.IsEligible(mixed with { Skillset = Skillset.Stamina }, SkillsetCombinations.Allowed(new[] { Skillset.Stamina })), Is.True);
+
+            // Picking both parts also looks for the combination.
+            Assert.That(SkillsetCombinations.SearchedFor(new[] { Skillset.Jumps, Skillset.Streams }), Is.EquivalentTo(new[] { Skillset.Jumps, Skillset.Streams, Skillset.JumpsStreams }));
+            Assert.That(SkillsetCombinations.SearchedFor(new[] { Skillset.Jumps }), Is.EqualTo(new[] { Skillset.Jumps }));
+        }
+
+        [Test]
+        public void TestRefiningRatesTheNotesOfEachSkillsetAndAppliesTheWeights()
+        {
+            var beatmap = createBeatmap(squareJumps(0, 24).Concat(stream(24 * beat / 2, 24, 150)).ToList());
+            var plain = new SkillsetSegmentFinder { MinimumPurity = 0.4 };
+            var segments = plain.FindSegments(beatmap, Skillset.Jumps, 1);
+            Assert.That(segments, Is.Not.Empty);
+
+            var refined = plain.RefineSegments(beatmap, segments)[0];
+            Assert.That(refined.StarRating, Is.GreaterThan(0));
+            Assert.That(refined.LabelStars, Does.ContainKey(Skillset.Jumps).And.ContainKey(Skillset.Streams));
+
+            // Whichever of the two is made much harder by its weight is the one that stays.
+            var jumpsHeavy = new SkillsetSegmentFinder { Weights = new SkillsetWeights(new Dictionary<Skillset, double> { [Skillset.Jumps] = 5, [Skillset.Streams] = 0.2 }) };
+            var streamsHeavy = new SkillsetSegmentFinder { Weights = new SkillsetWeights(new Dictionary<Skillset, double> { [Skillset.Jumps] = 0.2, [Skillset.Streams] = 5 }) };
+
+            Assert.That(jumpsHeavy.RefineSegments(beatmap, segments)[0].Labels, Is.EqualTo(new[] { Skillset.Jumps }));
+            Assert.That(streamsHeavy.RefineSegments(beatmap, segments)[0].Labels, Is.EqualTo(new[] { Skillset.Streams }));
         }
 
         [Test]

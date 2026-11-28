@@ -2,11 +2,15 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using osu.Framework.Bindables;
+using osu.Framework.Localisation;
 using osu.Game.Beatmaps;
 using osu.Game.Beatmaps.ControlPoints;
+using osu.Game.Configuration;
 using osu.Game.OsuSR;
 using osu.Game.Rulesets.Difficulty.Preprocessing;
 using osu.Game.Rulesets.Difficulty.Skills;
@@ -105,19 +109,16 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
         };
 
+        /// <summary>Share of a segment's notes a skillset needs to count as one of the segment's labels (see <see cref="MapSegment.Labels"/>).</summary>
+        public double SignificantShare { get; init; } = 0.25;
+
         /// <summary>Minimum share of a mixed segment's notes that each of its two parts must have, so a mixed segment really has both.</summary>
         public const double MINIMUM_COMPONENT_PURITY = 0.3;
 
         /// <summary>
         /// The two skillsets that a mixed skillset combines, or null for a regular skillset.
         /// </summary>
-        public static (Skillset First, Skillset Second)? ComponentsOf(Skillset skillset) => skillset switch
-        {
-            Skillset.JumpsStreams => (Skillset.Jumps, Skillset.Streams),
-            Skillset.FlowStreams => (Skillset.FlowAim, Skillset.Streams),
-            Skillset.TechSliders => (Skillset.Tech, Skillset.Sliders),
-            _ => null,
-        };
+        public static (Skillset First, Skillset Second)? ComponentsOf(Skillset skillset) => SkillsetCombinations.ComponentsOf(skillset);
 
         IReadOnlyList<MapSegment> ISkillsetSegmentFinder.FindSegments(IWorkingBeatmap beatmap, Skillset skillset, int maxSegments, CancellationToken cancellationToken)
             => FindSegments(beatmap, skillset, maxSegments, null, cancellationToken);
@@ -137,6 +138,161 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         {
             var calculator = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);
             return calculator.Calculate(new[] { CreateSegmentMod(segment) }, cancellationToken).StarRating;
+        }
+
+        public SkillsetWeights Weights { get; set; } = new SkillsetWeights();
+
+        /// <summary>A label counts if its weighted stars are at least this share of the hardest label's (6★ next to 8★ is 0.75: it doesn't count).</summary>
+        public const double LABEL_STAR_RATIO = 0.85;
+
+        public IReadOnlyList<MapSegment> RefineSegments(IWorkingBeatmap beatmap, IReadOnlyList<MapSegment> segments, CancellationToken cancellationToken = default)
+        {
+            if (segments.Count == 0)
+                return segments;
+
+            var profile = Analyse(beatmap, null, cancellationToken);
+            var objects = profile.Objects;
+            var sums = SkillsetCombinations.LABEL_SKILLSETS.ToDictionary(l => l, l => new SkillsetSums(profile, l));
+            var calculator = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);
+            var done = new Dictionary<(double, double), MapSegment>();
+
+            return segments.Select(segment =>
+            {
+                if (!done.TryGetValue((segment.FirstObjectTime, segment.EndTime), out var refined))
+                    done[(segment.FirstObjectTime, segment.EndTime)] = refined = refine(segment);
+
+                return segment with { Labels = refined.Labels, LabelStars = refined.LabelStars, StarRating = refined.StarRating };
+            }).ToList();
+
+            MapSegment refine(MapSegment segment)
+            {
+                int first = findFirst(objects, h => h.StartTime >= segment.FirstObjectTime - 0.5);
+                int last = findLast(objects, h => h.GetEndTime() <= segment.EndTime + 0.5);
+
+                double stars(HashSet<double>? only)
+                {
+                    if (only == null)
+                        return calculator.Calculate(new[] { CreateSegmentMod(segment) }, cancellationToken).StarRating;
+
+                    var keep = KeepObjectsMod.Create(only, out var registration);
+
+                    using (registration)
+                        return calculator.Calculate(new[] { CreateSegmentMod(segment), keep }, cancellationToken).StarRating;
+                }
+
+                if (first < 0 || last < first)
+                    return segment with { StarRating = stars(null) };
+
+                var candidates = SkillsetCombinations.LABEL_SKILLSETS.Where(l => sums[l].Purity(first, last) >= SignificantShare).ToList();
+
+                HashSet<double> timesOf(IEnumerable<Skillset> skillsets)
+                {
+                    var patterns = skillsets.Aggregate(NotePattern.None, (all, s) => all | PatternsFor(s));
+                    var times = new HashSet<double>();
+
+                    for (int i = first; i <= last; i++)
+                    {
+                        if ((profile.Notes[i].Pattern & patterns) != 0)
+                            times.Add(objects[i].StartTime);
+                    }
+
+                    return times;
+                }
+
+                // One real skillset (or none): the part as it is.
+                if (candidates.Count <= 1)
+                {
+                    double whole = stars(null);
+                    return segment with
+                    {
+                        Labels = candidates,
+                        LabelStars = candidates.ToDictionary(l => l, l => whole * Weights[l]),
+                        StarRating = whole,
+                    };
+                }
+
+                // Several: how hard is each one alone, compared with the others (weighted, since lazer undervalues some skills)?
+                var rawStars = candidates.ToDictionary(l => l, l => stars(timesOf(new[] { l })));
+                var weighted = candidates.ToDictionary(l => l, l => rawStars[l] * Weights[l]);
+                double hardest = weighted.Values.Max();
+                var retained = candidates.Where(l => weighted[l] >= hardest * LABEL_STAR_RATIO).ToList();
+
+                return segment with
+                {
+                    Labels = retained,
+                    LabelStars = weighted,
+                    StarRating = retained.Count == 1 ? rawStars[retained[0]] : stars(timesOf(retained)),
+                };
+            }
+        }
+
+        private static int findFirst(IReadOnlyList<HitObject> list, Func<HitObject, bool> match)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (match(list[i]))
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private static int findLast(IReadOnlyList<HitObject> list, Func<HitObject, bool> match)
+        {
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                if (match(list[i]))
+                    return i;
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Keeps only the hit objects starting at the given times (to rate some notes of a segment alone).
+        /// Mods get cloned by the difficulty calculation, so the times are kept here under a key, which is the mod's only setting.
+        /// </summary>
+        public class KeepObjectsMod : Mod, IApplicableToBeatmap
+        {
+            private static readonly ConcurrentDictionary<string, HashSet<double>> registry = new ConcurrentDictionary<string, HashSet<double>>();
+
+            [SettingSource("Key", "Which set of objects to keep.")]
+            public Bindable<string> Key { get; } = new Bindable<string>(string.Empty);
+
+            public override string Name => "Keep objects";
+            public override string Acronym => "KO";
+            public override LocalisableString Description => "Only keeps some hit objects.";
+            public override ModType Type => ModType.System;
+            public override bool UserPlayable => false;
+
+            public static KeepObjectsMod Create(HashSet<double> times, out IDisposable registration)
+            {
+                string key = Guid.NewGuid().ToString();
+                registry[key] = times;
+                registration = new Registration(key);
+                return new KeepObjectsMod { Key = { Value = key } };
+            }
+
+            public void ApplyToBeatmap(IBeatmap beatmap)
+            {
+                if (!registry.TryGetValue(Key.Value, out var times))
+                    return;
+
+                var osuBeatmap = (Beatmap<OsuHitObject>)beatmap;
+                osuBeatmap.HitObjects = osuBeatmap.HitObjects.Where(h => times.Contains(h.StartTime)).ToList();
+            }
+
+            private class Registration : IDisposable
+            {
+                private readonly string key;
+
+                public Registration(string key)
+                {
+                    this.key = key;
+                }
+
+                public void Dispose() => registry.TryRemove(key, out _);
+            }
         }
 
         public Mod CreateSegmentMod(MapSegment segment) => new OsuModSegment
@@ -242,9 +398,13 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                     ObjectCount = last - first + 1,
                     Scores = scores,
                     Purity = purity,
+                    Labels = labelsOf(sums, first, last),
                 };
             }
         }
+
+        private IReadOnlyList<Skillset> labelsOf(IReadOnlyDictionary<Skillset, SkillsetSums> sums, int first, int last)
+            => SkillsetCombinations.LABEL_SKILLSETS.Where(s => sums[s].Purity(first, last) >= SignificantShare).ToArray();
 
         private double minimumPurityFor(Skillset skillset)
             => MinimumPurity ?? Math.Min(MAXIMUM_PURITY, DefaultMinimumPurity(skillset) + PurityAdjustments.GetValueOrDefault(skillset));
@@ -269,9 +429,14 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             var partB = components is { } other ? new SkillsetSums(profile, other.Second) : null;
             double minimumPurity = minimumPurityFor(segment.Skillset);
 
+            // The skillsets that can't become a real part of the segment: extending must not add a skillset the player may not have picked.
+            var sums = SkillsetCombinations.LABEL_SKILLSETS.ToDictionary(l => l, l => new SkillsetSums(profile, l));
+            var foreign = SkillsetCombinations.LABEL_SKILLSETS.Where(l => !segment.Labels.Contains(l) && sums[l].Purity(first, last) < SignificantShare).ToList();
+
             // The whole part that is played must still be mostly the skillset, not only its drop: extending stops where it would stop being so.
             bool pureEnough(int from, int to)
                 => own.Purity(from, to) >= minimumPurity
+                   && foreign.All(l => sums[l].Purity(from, to) < SignificantShare)
                    && (partA == null || partB == null || (partA.Purity(from, to) >= MINIMUM_COMPONENT_PURITY && partB.Purity(from, to) >= MINIMUM_COMPONENT_PURITY));
 
             while (first > 0 && canJoin(objects[first - 1], objects[first]) && segment.FirstObjectTime - objects[first - 1].StartTime <= preDrop && pureEnough(first - 1, last))
@@ -303,31 +468,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                 EndTime = objects[last].GetEndTime(),
                 ObjectCount = last - first + 1,
                 Purity = own.Purity(first, last),
+                Labels = SkillsetCombinations.LABEL_SKILLSETS.Where(l => sums[l].Purity(first, last) >= SignificantShare).ToArray(),
             };
 
             static bool canJoin(HitObject before, HitObject after) => after.StartTime - before.GetEndTime() < BREAK_GAP;
-
-            static int findFirst(IReadOnlyList<HitObject> list, Func<HitObject, bool> match)
-            {
-                for (int i = 0; i < list.Count; i++)
-                {
-                    if (match(list[i]))
-                        return i;
-                }
-
-                return -1;
-            }
-
-            static int findLast(IReadOnlyList<HitObject> list, Func<HitObject, bool> match)
-            {
-                for (int i = list.Count - 1; i >= 0; i--)
-                {
-                    if (match(list[i]))
-                        return i;
-                }
-
-                return -1;
-            }
         }
 
         private static double barLine(IBeatmap beatmap, double time, bool next)
