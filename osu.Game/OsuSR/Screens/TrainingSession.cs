@@ -15,6 +15,7 @@ using osu.Framework.Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
+using osu.Framework.Threading;
 using osu.Framework.Logging;
 using osu.Framework.Platform;
 using osu.Framework.Screens;
@@ -27,6 +28,7 @@ using osu.Game.Overlays;
 using osu.Game.Overlays.Settings;
 using osu.Game.Rulesets;
 using osu.Game.Rulesets.Mods;
+using osu.Game.Utils;
 using osu.Game.Screens;
 using osu.Game.Screens.Backgrounds;
 using osuTK;
@@ -123,6 +125,23 @@ namespace osu.Game.OsuSR.Screens
         public SegmentFeedbackStore Feedback { get; private set; } = null!;
 
         private SegmentCache segmentCache = null!;
+        private SegmentCache baseCache = null!;
+        private string weightsSignature = string.Empty;
+
+        /// <summary>The mods a session can be played with, by acronym and name. Easy and hard rock exclude each other, as do half time and double time.</summary>
+        private static readonly (string Acronym, string Name)[] playable_mods =
+        {
+            ("EZ", "Easy"), ("HT", "Half time"), ("HR", "Hard rock"), ("DT", "Double time"), ("HD", "Hidden"), ("FL", "Flashlight"),
+        };
+
+        private static string[] lastMods = Array.Empty<string>();
+
+        public readonly IReadOnlyDictionary<string, BindableBool> ModsEnabled = playable_mods.ToDictionary(m => m.Acronym, _ => new BindableBool());
+
+        /// <summary>The mods picked on the setup panel, as new instances.</summary>
+        private Mod[] playedMods => ModUtils.FlattenMods(osuRuleset.CreateInstance().CreateAllMods())
+                                            .Where(m => ModsEnabled.TryGetValue(m.Acronym, out var enabled) && enabled.Value)
+                                            .ToArray();
 
         [Resolved]
         private RealmAccess realm { get; set; } = null!;
@@ -147,6 +166,9 @@ namespace osu.Game.OsuSR.Screens
         private OsuSpriteText indexText = null!;
         private CancellationTokenSource? indexCancellation;
         private Thread? indexThread;
+        private ScheduledDelegate? reindexSchedule;
+        private long realmTicks;
+        private long loadTicks;
         private OsuSpriteText lastResultText = null!;
         private OsuSpriteText countdownText = null!;
 
@@ -174,6 +196,9 @@ namespace osu.Game.OsuSR.Screens
             foreach (var skillset in skillsets ?? lastSkillsets)
                 SkillsetEnabled[skillset].Value = true;
 
+            foreach (string acronym in lastMods)
+                ModsEnabled[acronym].Value = true;
+
             finderOverride = finder;
         }
 
@@ -189,7 +214,17 @@ namespace osu.Game.OsuSR.Screens
             // The weights that make skillsets' star ratings comparable (editable in osu-sr/skillset-weights.json).
             var weights = SkillsetWeights.Load(storage);
             finder.Weights = weights;
-            segmentCache = new SegmentCache(storage, weights.Signature);
+            weightsSignature = weights.Signature;
+            baseCache = new SegmentCache(storage);
+            applyMods();
+
+            ModsEnabled["EZ"].BindValueChanged(e => modToggled(e, "HR"));
+            ModsEnabled["HR"].BindValueChanged(e => modToggled(e, "EZ"));
+            ModsEnabled["HT"].BindValueChanged(e => modToggled(e, "DT"));
+            ModsEnabled["DT"].BindValueChanged(e => modToggled(e, "HT"));
+
+            foreach (string other in new[] { "HD", "FL" })
+                ModsEnabled[other].BindValueChanged(_ => applyMods(true));
 
             InternalChildren = new Drawable[]
             {
@@ -262,6 +297,24 @@ namespace osu.Game.OsuSR.Screens
                                             LabelText = "Étoiles maximum (du passage)",
                                             Current = MaximumStars,
                                             KeyboardStep = 0.1f,
+                                        },
+                                        new OsuSpriteText
+                                        {
+                                            Text = "Mods (les étoiles et les passages en tiennent compte)",
+                                            Font = OsuFont.Default.With(size: 16, weight: FontWeight.SemiBold),
+                                            Margin = new MarginPadding { Horizontal = 20 },
+                                        },
+                                        new GridContainer
+                                        {
+                                            RelativeSizeAxes = Axes.X,
+                                            AutoSizeAxes = Axes.Y,
+                                            ColumnDimensions = new[] { new Dimension(), new Dimension() },
+                                            RowDimensions = Enumerable.Range(0, (playable_mods.Length + 1) / 2).Select(_ => new Dimension(GridSizeMode.AutoSize)).ToArray(),
+                                            Content = playable_mods.Chunk(2).Select(row => row.Select(m => (Drawable)new SettingsCheckbox
+                                            {
+                                                LabelText = $"{m.Name} ({m.Acronym})",
+                                                Current = ModsEnabled[m.Acronym],
+                                            }).Append(Empty()).Take(2).ToArray()).ToArray(),
                                         },
                                         new SettingsCheckbox
                                         {
@@ -378,12 +431,42 @@ namespace osu.Game.OsuSR.Screens
                                        + (adjustments.Count == 0 ? string.Empty : "\nSeuils plus stricts : " + string.Join(", ", adjustments.Select(p => $"{p.Key.GetDescription()} +{p.Value:P0}")));
         }
 
+        private void modToggled(ValueChangedEvent<bool> e, string excluded)
+        {
+            if (e.NewValue)
+                ModsEnabled[excluded].Value = false;
+
+            applyMods(true);
+        }
+
+        /// <summary>
+        /// Applies the picked mods to how parts are found and rated: what was analysed with other mods is kept apart (under another signature),
+        /// and the library is analysed again for these (once, then kept).
+        /// </summary>
+        private void applyMods(bool reindex = false)
+        {
+            var mods = playedMods;
+            finder.Mods = mods;
+            lastMods = mods.Select(m => m.Acronym).ToArray();
+            segmentCache = baseCache.WithSignature(weightsSignature + "|" + string.Join("+", lastMods.OrderBy(a => a)));
+
+            if (reindex)
+                startIndexing();
+        }
+
         private void updateSkillsets()
         {
             var selected = SelectedSkillsets;
 
             if (selected.Length > 0)
                 lastSkillsets = selected;
+
+            // A moment after the last change, the index starts again with the new skillsets first (what was analysed is kept).
+            if (IsLoaded && !running)
+            {
+                reindexSchedule?.Cancel();
+                reindexSchedule = Scheduler.AddDelayed(startIndexing, 1500);
+            }
 
             titleText.Text = selected.Length == 0 ? "Session continue" : $"Session continue : {string.Join(" + ", selected.Select(s => s.GetDescription()))}";
             startButton.Enabled.Value = selected.Length > 0;
@@ -759,6 +842,7 @@ namespace osu.Game.OsuSR.Screens
             bool includeUnknown = IncludeUnknownStatus.Value;
             double min = MinimumStars.Value * map_stars_lower_factor;
             double max = MaximumStars.Value * map_stars_upper_factor;
+            var wanted = SkillsetCombinations.SearchedFor(SelectedSkillsets);
 
             // The previous run (other mods, other range) is told to stop and has to be over before this one starts: they share the finder.
             var previous = indexThread;
@@ -767,7 +851,7 @@ namespace osu.Game.OsuSR.Screens
             indexThread = new Thread(() =>
             {
                 previous?.Join();
-                runIndexing(view, includeUnknown, min, max, cancellation.Token);
+                runIndexing(view, includeUnknown, min, max, wanted, cancellation.Token);
             })
             {
                 Name = "OSU SR library index",
@@ -781,76 +865,42 @@ namespace osu.Game.OsuSR.Screens
         /// <summary>The workers of the index: one per core. Speed matters more than the game's frame rate while the library is being analysed (the first time only).</summary>
         private static int indexWorkers => Math.Max(1, Environment.ProcessorCount);
 
-        private void runIndexing(SegmentCache cache, bool includeUnknown, double min, double max, CancellationToken token)
+        private void runIndexing(SegmentCache cache, bool includeUnknown, double min, double max, Skillset[] wanted, CancellationToken token)
         {
             try
             {
                 var library = loadPool(Array.Empty<Skillset>(), 0, 30, false, includeUnknown);
 
-                // The maps whose stars can fit the chosen range first (the pool's star filter is by map, so this uses the map's own rating).
+                // The pool's star filter is by map, so this uses the map's own rating.
                 var stars = realm.Run(r => library.ToDictionary(p => p.ID, p => r.Find<BeatmapInfo>(p.ID)?.StarRating ?? 0));
-                var queue = new ConcurrentQueue<(Guid ID, double Weight, double BPM, string Hash)>(
-                    library.OrderBy(p => stars[p.ID] >= min && stars[p.ID] <= max ? 0 : 1).ThenBy(_ => Random.Shared.Next()));
+                var inRange = library.Where(p => stars[p.ID] >= min && stars[p.ID] <= max).OrderBy(_ => Random.Shared.Next()).ToList();
+                var outside = library.Where(p => stars[p.ID] < min || stars[p.ID] > max).OrderBy(_ => Random.Shared.Next()).ToList();
+                var everything = Enum.GetValues<Skillset>();
 
-                int total = queue.Count;
-                int done = 0;
-                var all = Enum.GetValues<Skillset>();
-                var clock = Stopwatch.StartNew();
-                var lastSave = Stopwatch.StartNew();
-                object saveLock = new object();
-
-                void work()
+                // What the session needs first (its skillsets, the maps in its star range), then the rest, so playing is possible as early as possible.
+                var passes = new List<(List<(Guid ID, double Weight, double BPM, string Hash)> Maps, Skillset[] Skillsets)>
                 {
-                    while (!token.IsCancellationRequested && queue.TryDequeue(out var entry))
-                    {
-                        var adjustments = finder.PurityAdjustments;
-                        var missing = all.Where(s => !cache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
+                    (inRange, wanted),
+                    (inRange, everything),
+                    (outside, wanted),
+                    (outside, everything),
+                };
 
-                        if (missing.Length > 0 || needsStars(cache, entry.Hash, all, adjustments))
-                        {
-                            try
-                            {
-                                var info = realm.Run(r => r.Find<BeatmapInfo>(entry.ID)?.Detach());
+                var clock = Stopwatch.StartNew();
+                int indexed = 0;
 
-                                if (info != null)
-                                    indexMap(cache, info, all, missing, adjustments, token);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                return;
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.Log($"OSU SR: could not index a map ({ex.Message})");
-                            }
-                        }
-
-                        int count = Interlocked.Increment(ref done);
-
-                        if (count % 20 == 0 || count == total)
-                            Schedule(() => indexText.Text = count == total ? $"Bibliothèque indexée ({count} maps)" : $"Indexation de la bibliothèque : {count}/{total} maps (une seule fois, tu peux jouer pendant ce temps)");
-
-                        lock (saveLock)
-                        {
-                            if (lastSave.Elapsed.TotalSeconds > 60)
-                            {
-                                cache.Save();
-                                lastSave.Restart();
-                            }
-                        }
-                    }
+                foreach (var (maps, skillsets) in passes)
+                {
+                    token.ThrowIfCancellationRequested();
+                    indexed += runPass(cache, maps, skillsets, indexed, passes.Sum(p => p.Maps.Count), token);
                 }
 
-                var workers = Enumerable.Range(0, indexWorkers).Select(i => new Thread(work) { Name = $"OSU SR library index {i}", IsBackground = true }).ToList();
-                workers.ForEach(w => w.Start());
-                workers.ForEach(w => w.Join());
-
                 cache.Save();
-                Logger.Log($"OSU SR: indexed {done} maps in {clock.Elapsed.TotalSeconds:N0} s ({done / Math.Max(1, clock.Elapsed.TotalSeconds):N1} maps/s, {workers.Count} workers)");
+                Logger.Log($"OSU SR: indexed {indexed} map passes in {clock.Elapsed.TotalSeconds:N0} s ({indexed / Math.Max(1, clock.Elapsed.TotalSeconds):N1} per second, {indexWorkers} workers)");
             }
             catch (OperationCanceledException)
             {
-                // The session screen was left: what was analysed is kept.
+                // The session screen was left (or the mods changed): what was analysed is kept.
             }
             catch (Exception ex)
             {
@@ -858,12 +908,102 @@ namespace osu.Game.OsuSR.Screens
             }
         }
 
+        /// <summary>Analyses the given maps for the given skillsets on all the cores. Returns how many maps were gone through.</summary>
+        private int runPass(SegmentCache cache, List<(Guid ID, double Weight, double BPM, string Hash)> maps, Skillset[] skillsets, int before, int grandTotal, CancellationToken token)
+        {
+            var queue = new ConcurrentQueue<(Guid ID, double Weight, double BPM, string Hash)>(maps);
+            int done = 0;
+            var lastSave = Stopwatch.StartNew();
+            object saveLock = new object();
+
+            void work()
+            {
+                while (!token.IsCancellationRequested && queue.TryDequeue(out var entry))
+                {
+                    var adjustments = finder.PurityAdjustments;
+                    var missing = skillsets.Where(s => !cache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
+
+                    if (missing.Length > 0 || needsStars(cache, entry.Hash, skillsets, adjustments))
+                    {
+                        try
+                        {
+                            long realmStart = Stopwatch.GetTimestamp();
+                            var info = realm.Run(r => r.Find<BeatmapInfo>(entry.ID)?.Detach());
+                            Interlocked.Add(ref realmTicks, Stopwatch.GetTimestamp() - realmStart);
+
+                            if (info != null)
+                                indexMap(cache, info, skillsets, missing, adjustments, token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"OSU SR: could not index a map ({ex.Message})");
+                        }
+                    }
+
+                    int count = Interlocked.Increment(ref done);
+
+                    if (count % 20 == 0)
+                        Schedule(() => indexText.Text = $"Indexation de la bibliothèque : {before + count}/{grandTotal} (une seule fois, tu peux jouer pendant ce temps)");
+
+                    lock (saveLock)
+                    {
+                        if (lastSave.Elapsed.TotalSeconds > 60)
+                        {
+                            cache.Save();
+                            lastSave.Restart();
+                        }
+                    }
+                }
+            }
+
+            var workers = Enumerable.Range(0, indexWorkers).Select(i => new Thread(work) { Name = $"OSU SR library index {i}", IsBackground = true }).ToList();
+            workers.ForEach(w => w.Start());
+
+            // Every few seconds: the speed, how busy the cores are, and where the time goes (to find what holds indexing back).
+            var process = Process.GetCurrentProcess();
+            var wall = Stopwatch.StartNew();
+            var lastCpu = process.TotalProcessorTime;
+            var lastWall = TimeSpan.Zero;
+            int lastDone = 0;
+
+            while (!workers.All(w => w.Join(10_000)))
+            {
+                process.Refresh();
+                var cpu = process.TotalProcessorTime;
+                double seconds = (wall.Elapsed - lastWall).TotalSeconds;
+                var (analysing, rating) = finder.TimeSpent;
+                int now = Volatile.Read(ref done);
+
+                Logger.Log($"OSU SR index: {(now - lastDone) / seconds:N1} maps/s, cpu {(cpu - lastCpu).TotalSeconds / seconds / Environment.ProcessorCount:P0} of {Environment.ProcessorCount} cores, "
+                           + $"totals over {now} maps: realm {(double)Interlocked.Read(ref realmTicks) / Stopwatch.Frequency:N0} s, loading files {(double)Interlocked.Read(ref loadTicks) / Stopwatch.Frequency:N0} s, "
+                           + $"analysing {analysing:N0} s, rating {rating:N0} s (thread-seconds), gc pauses {GC.GetTotalPauseDuration().TotalSeconds:N0} s");
+
+                lastCpu = cpu;
+                lastWall = wall.Elapsed;
+                lastDone = now;
+            }
+
+            if (!token.IsCancellationRequested && before + done >= grandTotal)
+                Schedule(() => indexText.Text = $"Bibliothèque indexée ({maps.Count} maps)");
+
+            return done;
+        }
+
         private static bool needsStars(SegmentCache cache, string hash, Skillset[] all, IReadOnlyDictionary<Skillset, double> adjustments)
             => all.Any(s => cache.TryGet(hash, s, adjustments.GetValueOrDefault(s), out var segments) && segments.Any(x => x.StarRating == null));
 
         private void indexMap(SegmentCache cache, BeatmapInfo info, Skillset[] all, Skillset[] missing, IReadOnlyDictionary<Skillset, double> adjustments, CancellationToken token)
         {
+            long loadStart = Stopwatch.GetTimestamp();
             var working = beatmaps.GetWorkingBeatmap(info);
+
+            // Reading and parsing the map's file happens here, so it is timed on its own.
+            _ = working.Beatmap;
+            Interlocked.Add(ref loadTicks, Stopwatch.GetTimestamp() - loadStart);
 
             if (missing.Length > 0)
             {
@@ -918,7 +1058,7 @@ namespace osu.Game.OsuSR.Screens
             {
                 finder.CreateSegmentMod(segment),
                 osuRuleset.CreateInstance().CreateMod<ModNoFail>()!,
-            };
+            }.Concat(playedMods).ToArray();
 
             ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = working);
 
@@ -1069,7 +1209,7 @@ namespace osu.Game.OsuSR.Screens
 
             Ruleset.Value = osuRuleset;
             Beatmap.Value = working;
-            Mods.Value = new[] { osuRuleset.CreateInstance().CreateMod<ModNoFail>()! };
+            Mods.Value = new[] { osuRuleset.CreateInstance().CreateMod<ModNoFail>()! }.Concat(playedMods).ToArray();
 
             ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = first.Part.Beatmap);
 

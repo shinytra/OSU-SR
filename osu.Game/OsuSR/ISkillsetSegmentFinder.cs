@@ -59,6 +59,9 @@ namespace osu.Game.OsuSR
         IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindRefinedSegments(IWorkingBeatmap beatmap, IReadOnlyCollection<Skillset> skillsets, int maxSegments,
                                                                                      CancellationToken cancellationToken = default);
 
+        /// <summary>Total time (seconds, all threads together) spent analysing maps and rating segments so far. For finding where indexing is slow.</summary>
+        (double Analysing, double Rating) TimeSpent { get; }
+
         /// <summary>
         /// Creates the mod that restricts gameplay to the given segment.
         /// </summary>

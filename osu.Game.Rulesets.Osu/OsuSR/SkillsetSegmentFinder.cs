@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using osu.Framework.Bindables;
@@ -142,6 +143,13 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         public SkillsetWeights Weights { get; set; } = new SkillsetWeights();
 
+        /// <summary>Time spent analysing maps and rating segments, in stopwatch ticks, all threads together (to see where indexing spends its time).</summary>
+        public static long AnalyseTicks;
+
+        public static long RefineTicks;
+
+        public (double Analysing, double Rating) TimeSpent => ((double)Interlocked.Read(ref AnalyseTicks) / Stopwatch.Frequency, (double)Interlocked.Read(ref RefineTicks) / Stopwatch.Frequency);
+
         public IReadOnlyList<Mod> Mods { get; set; } = Array.Empty<Mod>();
 
         /// <summary>A label counts if its weighted stars are at least this share of the hardest label's (6★ next to 8★ is 0.75: it doesn't count).</summary>
@@ -174,18 +182,22 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         private IReadOnlyList<MapSegment> refineSegments(SkillsetProfile profile, IWorkingBeatmap beatmap, IReadOnlyList<MapSegment> segments, CancellationToken cancellationToken)
         {
+            long refineStart = Stopwatch.GetTimestamp();
             var objects = profile.Objects;
             var sums = SkillsetCombinations.LABEL_SKILLSETS.ToDictionary(l => l, l => new SkillsetSums(profile, l));
             var calculator = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);
             var done = new Dictionary<(double, double), MapSegment>();
 
-            return segments.Select(segment =>
+            var result = segments.Select(segment =>
             {
                 if (!done.TryGetValue((segment.FirstObjectTime, segment.EndTime), out var refined))
                     done[(segment.FirstObjectTime, segment.EndTime)] = refined = refine(segment);
 
                 return segment with { Labels = refined.Labels, LabelStars = refined.LabelStars, StarRating = refined.StarRating };
             }).ToList();
+
+            Interlocked.Add(ref RefineTicks, Stopwatch.GetTimestamp() - refineStart);
+            return result;
 
             MapSegment refine(MapSegment segment)
             {
@@ -329,9 +341,12 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         /// </summary>
         public SkillsetProfile Analyse(IWorkingBeatmap beatmap, IEnumerable<Mod>? mods = null, CancellationToken cancellationToken = default)
         {
+            long start = Stopwatch.GetTimestamp();
             var calculator = new ProfilingDifficultyCalculator(beatmap);
             calculator.Calculate(mods ?? Mods, cancellationToken);
-            return calculator.CreateProfile();
+            var profile = calculator.CreateProfile();
+            Interlocked.Add(ref AnalyseTicks, Stopwatch.GetTimestamp() - start);
+            return profile;
         }
 
         /// <summary>
