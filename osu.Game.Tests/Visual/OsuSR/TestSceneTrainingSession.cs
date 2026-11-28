@@ -5,6 +5,7 @@ using System.Linq;
 using NUnit.Framework;
 using osu.Framework.Extensions;
 using osu.Framework.Screens;
+using osu.Game.Beatmaps;
 using osu.Game.OsuSR;
 using osu.Game.OsuSR.Screens;
 using osu.Game.Rulesets.Mods;
@@ -29,10 +30,18 @@ namespace osu.Game.Tests.Visual.OsuSR
             MinimumMatchingObjects = 0,
         };
 
+        // Training sessions only use ranked, approved or loved maps.
+        private void markRanked() => Game.Realm.Write(r =>
+        {
+            foreach (var b in r.All<BeatmapInfo>())
+                b.Status = BeatmapOnlineStatus.Ranked;
+        });
+
         [Test]
         public void TestSegmentsChain()
         {
             AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
+            AddStep("mark maps ranked", markRanked);
 
             AddStep("enter jumps session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps }, finder)));
             AddUntilStep("wait for session", () => session.IsCurrentScreen());
@@ -76,6 +85,7 @@ namespace osu.Game.Tests.Visual.OsuSR
         public void TestSeriesIsOneContinuousGameplay()
         {
             AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
+            AddStep("mark maps ranked", markRanked);
 
             AddStep("enter jumps session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps }, finder)));
             AddUntilStep("wait for session", () => session.IsCurrentScreen());
@@ -85,7 +95,7 @@ namespace osu.Game.Tests.Visual.OsuSR
                 session.MinimumStars.Value = 0;
                 session.MaximumStars.Value = 12;
                 session.SeriesMode.Value = true;
-                session.SeriesLength.Value = 2;
+                session.SeriesLength.Value = 3;
             });
             AddStep("start", () => session.StartSession());
 
@@ -93,6 +103,7 @@ namespace osu.Game.Tests.Visual.OsuSR
 
             AddUntilStep("series player shown", () => (player = (Game.ScreenStack.CurrentScreen as SeriesPlayer)!) != null);
             AddAssert("one beatmap for the whole series", () => Game.Beatmap.Value is SeriesWorkingBeatmap);
+            AddUntilStep("next parts are added while playing", () => player.Parts.Count >= 2);
             AddAssert("parts on an increasing timeline", () => player.Slots.Zip(player.Slots.Skip(1), (a, b) => b.FirstObjectTime > a.EndTime).All(x => x));
             AddAssert("all hit objects after the start", () => player.Beatmap.Value.GetPlayableBeatmap(player.Ruleset.Value, player.Mods.Value).HitObjects.All(h => h.StartTime >= 0));
             AddUntilStep("gameplay clock runs", () => player.CurrentGameplayTime, () => Is.GreaterThan(0));
@@ -105,6 +116,7 @@ namespace osu.Game.Tests.Visual.OsuSR
         public void TestMixedSkillsetsAlternate()
         {
             AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
+            AddStep("mark maps ranked", markRanked);
 
             AddStep("enter mixed session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps, Skillset.Streams }, finder)));
             AddUntilStep("wait for session", () => session.IsCurrentScreen());

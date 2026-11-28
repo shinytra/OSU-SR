@@ -43,39 +43,55 @@ namespace osu.Game.OsuSR
         /// <summary>How long before a part's last object its music starts to fade out (ms).</summary>
         public const double FADE_OUT_LEAD = 300;
 
+        /// <summary>Length (ms) of the silent track of a series whose parts are found while it plays, so its end is not known.</summary>
+        public const double LIVE_LENGTH = 3 * 3600 * 1000;
+
         public static IReadOnlyList<SeriesSlot> Build(IReadOnlyList<SeriesPart> parts)
         {
             var slots = new List<SeriesSlot>();
-            double previousEnd = 0;
-            double previousGap = 0;
 
             for (int i = 0; i < parts.Count; i++)
-            {
-                var segment = parts[i].Segment;
-                double leadIn = segment.FirstObjectTime - segment.StartTime;
-
-                double musicStart = i == 0 ? 0 : previousEnd + previousGap - leadIn;
-                double shift = musicStart - segment.StartTime;
-                double end = shift + segment.EndTime;
-
-                double gap = 0;
-
-                if (i + 1 < parts.Count)
-                {
-                    double gapBpm = parts[i].Beatmap.BeatmapInfo.BPM;
-                    gap = gapBpm > 0 ? Math.Clamp(GAP_BEATS * 60000 / gapBpm, MINIMUM_GAP, MAXIMUM_GAP) : MINIMUM_GAP;
-                }
-
-                double bpm = parts[i].Beatmap.BeatmapInfo.BPM;
-                double startTempo = i == 0 ? 1 : BpmMatcher.TempoRatio(bpm, parts[i - 1].Beatmap.BeatmapInfo.BPM);
-                double endTempo = i + 1 < parts.Count ? BpmMatcher.TempoRatio(bpm, parts[i + 1].Beatmap.BeatmapInfo.BPM) : 1;
-
-                slots.Add(new SeriesSlot(shift, musicStart, shift + segment.FirstObjectTime, end, gap, startTempo, endTempo));
-                previousEnd = end;
-                previousGap = gap;
-            }
+                Extend(slots, parts[i], i == 0 ? null : parts[i - 1]);
 
             return slots;
+        }
+
+        /// <summary>
+        /// Puts one more part after the last one of <paramref name="slots"/>, and completes the last slot (its gap to the new part, and the tempo it ramps to).
+        /// </summary>
+        /// <param name="slots">The slots so far, one for each part before <paramref name="next"/>. The new slot is added to the list.</param>
+        /// <param name="next">The part to add.</param>
+        /// <param name="previous">The part that comes right before it (null for the first part).</param>
+        /// <param name="earliestMusicStart">
+        /// Earliest timeline time at which the new part's music may start. When parts are found while the series plays, this is a little after the current time.
+        /// </param>
+        public static SeriesSlot Extend(List<SeriesSlot> slots, SeriesPart next, SeriesPart? previous, double earliestMusicStart = 0)
+        {
+            var segment = next.Segment;
+            double leadIn = segment.FirstObjectTime - segment.StartTime;
+            double nextBpm = next.Beatmap.BeatmapInfo.BPM;
+
+            double musicStart = 0;
+            double startTempo = 1;
+
+            if (previous != null && slots.Count > 0)
+            {
+                var last = slots[^1];
+                double previousBpm = previous.Beatmap.BeatmapInfo.BPM;
+                double gap = previousBpm > 0 ? Math.Clamp(GAP_BEATS * 60000 / previousBpm, MINIMUM_GAP, MAXIMUM_GAP) : MINIMUM_GAP;
+
+                musicStart = Math.Max(last.EndTime + gap - leadIn, earliestMusicStart);
+
+                // If it had to wait, the gap is what is left between the last object and the first one of the new part.
+                gap = musicStart + leadIn - last.EndTime;
+                slots[^1] = last with { Gap = gap, EndTempo = BpmMatcher.TempoRatio(previousBpm, nextBpm) };
+                startTempo = BpmMatcher.TempoRatio(nextBpm, previousBpm);
+            }
+
+            double shift = musicStart - segment.StartTime;
+            var slot = new SeriesSlot(shift, musicStart, shift + segment.FirstObjectTime, shift + segment.EndTime, 0, startTempo);
+            slots.Add(slot);
+            return slot;
         }
 
         /// <summary>Total length of the series gameplay (ms), including the final fade out.</summary>

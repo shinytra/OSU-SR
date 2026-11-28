@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using osu.Framework.Allocation;
 using osu.Framework.Audio;
 using osu.Framework.Audio.Track;
@@ -11,10 +12,13 @@ using osu.Framework.Bindables;
 using osu.Framework.Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Input.Events;
+using osu.Framework.Logging;
 using osu.Framework.Screens;
+using osu.Game.Beatmaps;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Sprites;
 using osu.Game.Rulesets.Judgements;
+using osu.Game.Rulesets.Objects;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Scoring;
 using osu.Game.Screens.Play;
@@ -28,7 +32,9 @@ namespace osu.Game.OsuSR.Screens
     /// so there is no loading or screen between them. The music of each part is started, tempo-ramped and crossfaded here, on the beat of its objects.
     /// </summary>
     /// <remarks>
-    /// The selected beatmap must be the <see cref="SeriesWorkingBeatmap"/> of these parts.
+    /// The selected beatmap must be the <see cref="SeriesWorkingBeatmap"/> of the first part.
+    /// The other parts are taken from a <see cref="SeriesFeed"/> as they are ready and added to the running gameplay, a couple of parts ahead,
+    /// so the series can start right away and can be endless.
     /// </remarks>
     public partial class SeriesPlayer : Player
     {
@@ -38,34 +44,50 @@ namespace osu.Game.OsuSR.Screens
         /// <summary>Least time (ms) between two corrections of the same track, since a seek takes a moment to show.</summary>
         private const double min_seek_interval = 300;
 
-        public readonly IReadOnlyList<SeriesPart> Parts;
-        public readonly IReadOnlyList<SeriesSlot> Slots;
+        /// <summary>How many parts may be on the timeline beyond the one being played.</summary>
+        private const int parts_ahead = 2;
 
+        /// <summary>The music of a late part starts at least this long (ms) after the time it was added.</summary>
+        private const double late_part_delay = 500;
+
+        private readonly List<SeriesPart> parts;
+        private readonly List<SeriesSlot> slots;
+        private readonly ISkillsetSegmentFinder finder;
+        private readonly IBeatmap composite;
+        private readonly SeriesFeed feed;
         private readonly SegmentFeedbackStore? feedback;
         private readonly HashSet<int> reported = new HashSet<int>();
 
-        private Track?[] tracks = Array.Empty<Track?>();
-        private BindableDouble[] tempos = Array.Empty<BindableDouble>();
-        private double[] lastSeek = Array.Empty<double>();
+        private readonly List<Track> tracks = new List<Track>();
+        private readonly List<BindableDouble> tempos = new List<BindableDouble>();
+        private readonly List<double> lastSeek = new List<double>();
+        private readonly List<PartStats> stats = new List<PartStats>();
         private bool started;
-
-        private double[] numeric = Array.Empty<double>();
-        private double[] maximum = Array.Empty<double>();
-        private int[] combos = Array.Empty<int>();
-        private long[] scoreAtEnd = Array.Empty<long>();
+        private bool finishing;
 
         private OsuSpriteText feedbackText = null!;
 
         [Cached(typeof(IGameplayLeaderboardProvider))]
         private readonly EmptyGameplayLeaderboardProvider leaderboardProvider = new EmptyGameplayLeaderboardProvider();
 
-        /// <summary>Results of the parts played, in order. Empty if the player was left before the end.</summary>
+        /// <summary>The parts on the timeline so far.</summary>
+        public IReadOnlyList<SeriesPart> Parts => parts;
+
+        public IReadOnlyList<SeriesSlot> Slots => slots;
+
+        /// <summary>Results of the parts played, in order. Set when the player ends (and also when it is left early, for the parts played).</summary>
         public IReadOnlyList<SegmentResult> Results { get; private set; } = Array.Empty<SegmentResult>();
 
         /// <summary>Current time of the gameplay clock (ms), on the series timeline.</summary>
         public double CurrentGameplayTime => GameplayClockContainer.CurrentTime;
 
-        public SeriesPlayer(IReadOnlyList<SeriesPart> parts, IReadOnlyList<SeriesSlot> slots, SegmentFeedbackStore? feedback = null)
+        /// <param name="finder">Creates the hit objects of the parts that are added while playing.</param>
+        /// <param name="composite">The beatmap of the <see cref="SeriesWorkingBeatmap"/>, which grows as parts are added.</param>
+        /// <param name="first">The part the series starts with, already in the beatmap.</param>
+        /// <param name="firstSlot">Its slot on the timeline.</param>
+        /// <param name="feed">Where the next parts come from.</param>
+        /// <param name="feedback">Where "wrongly classified" reports go. Reports are ignored when null.</param>
+        public SeriesPlayer(ISkillsetSegmentFinder finder, IBeatmap composite, SeriesPart first, SeriesSlot firstSlot, SeriesFeed feed, SegmentFeedbackStore? feedback = null)
             : base(new PlayerConfiguration
             {
                 ShowResults = false,
@@ -73,31 +95,33 @@ namespace osu.Game.OsuSR.Screens
                 AllowSkipping = false,
             })
         {
-            Parts = parts;
-            Slots = slots;
+            this.finder = finder;
+            this.composite = composite;
+            this.feed = feed;
             this.feedback = feedback;
+
+            parts = new List<SeriesPart> { first };
+            slots = new List<SeriesSlot> { firstSlot };
+            addPartState(first);
+        }
+
+        private void addPartState(SeriesPart part)
+        {
+            var tempo = new BindableDouble(1);
+            var track = part.Beatmap.TrackLoaded ? part.Beatmap.Track : part.Beatmap.LoadTrack();
+            track.Stop();
+            track.Volume.Value = 0;
+            track.AddAdjustment(AdjustableProperty.Tempo, tempo);
+
+            tracks.Add(track);
+            tempos.Add(tempo);
+            lastSeek.Add(double.MinValue);
+            stats.Add(new PartStats());
         }
 
         protected override void LoadComplete()
         {
             base.LoadComplete();
-
-            int count = Parts.Count;
-            numeric = new double[count];
-            maximum = new double[count];
-            combos = new int[count];
-            scoreAtEnd = new long[count];
-            lastSeek = Enumerable.Repeat(double.MinValue, count).ToArray();
-
-            tempos = Parts.Select(_ => new BindableDouble(1)).ToArray();
-            tracks = Parts.Select((p, i) =>
-            {
-                var track = p.Beatmap.TrackLoaded ? p.Beatmap.Track : p.Beatmap.LoadTrack();
-                track.Stop();
-                track.Volume.Value = 0;
-                track.AddAdjustment(AdjustableProperty.Tempo, tempos[i]);
-                return (Track?)track;
-            }).ToArray();
 
             AddInternal(feedbackText = new OsuSpriteText
             {
@@ -109,12 +133,6 @@ namespace osu.Game.OsuSR.Screens
             });
 
             ScoreProcessor.NewJudgement += onJudgement;
-
-            ScoreProcessor.HasCompleted.BindValueChanged(completed =>
-            {
-                if (completed.NewValue)
-                    Scheduler.AddDelayed(finish, SeriesTimeline.FINAL_FADE_OUT);
-            });
         }
 
         private void onJudgement(JudgementResult result)
@@ -122,22 +140,22 @@ namespace osu.Game.OsuSR.Screens
             if (!result.Type.AffectsAccuracy())
                 return;
 
-            int part = partOf(result.HitObject.StartTime);
-            numeric[part] += ScoreProcessor.GetBaseScoreForResult(result.Type);
-            maximum[part] += ScoreProcessor.GetBaseScoreForResult(result.Judgement.MaxResult);
-            combos[part] = Math.Max(combos[part], ScoreProcessor.Combo.Value);
-            scoreAtEnd[part] = ScoreProcessor.TotalScore.Value;
+            var part = stats[partOf(result.HitObject.StartTime)];
+            part.Numeric += ScoreProcessor.GetBaseScoreForResult(result.Type);
+            part.Maximum += ScoreProcessor.GetBaseScoreForResult(result.Judgement.MaxResult);
+            part.Combo = Math.Max(part.Combo, ScoreProcessor.Combo.Value);
+            part.ScoreAtEnd = ScoreProcessor.TotalScore.Value;
         }
 
         private int partOf(double time)
         {
-            for (int i = 0; i < Slots.Count; i++)
+            for (int i = 0; i < slots.Count; i++)
             {
-                if (time <= Slots[i].EndTime + 1)
+                if (time <= slots[i].EndTime + 1)
                     return i;
             }
 
-            return Slots.Count - 1;
+            return slots.Count - 1;
         }
 
         protected override void StartGameplay()
@@ -150,20 +168,78 @@ namespace osu.Game.OsuSR.Screens
         {
             base.Update();
 
-            if (!started)
+            if (!started || finishing)
                 return;
 
             double time = GameplayClockContainer.CurrentTime;
+
+            addNextPart(time);
+            updateMusic(time);
+
+            // A series that ends: finish once the last part is over and the feed has nothing more.
+            if (feed.Exhausted && time > slots[^1].EndTime + SeriesTimeline.FINAL_FADE_OUT)
+            {
+                finishing = true;
+                finish();
+            }
+        }
+
+        /// <summary>
+        /// Adds the next prepared part to the end of the timeline, if there is one and the timeline isn't already far enough ahead.
+        /// This is cheap (moving a part's hit objects and giving them their defaults), the heavy work was done by the feed's thread.
+        /// </summary>
+        private void addNextPart(double time)
+        {
+            if (parts.Count - 1 - SeriesTimeline.PartAt(slots, time) >= parts_ahead)
+                return;
+
+            if (!feed.TryTake(out var data))
+                return;
+
+            var previous = parts[^1];
+            var slot = SeriesTimeline.Extend(slots, data.Part, previous, time + late_part_delay);
+            double switchTime = slots[^2].EndTime + slots[^2].Gap / 2;
+
+            var added = finder.AppendSeriesPart(composite, data, slot, switchTime);
+
+            foreach (var h in added)
+                DrawableRuleset.Playfield.Add(h);
+
+            countAsPlayable(added);
+
+            parts.Add(data.Part);
+            addPartState(data.Part);
+        }
+
+        /// <summary>
+        /// The score processor counts the objects of the beatmap when the gameplay starts, and considers the play over when all of them are judged.
+        /// Objects added later are counted too, or the play would look finished at the end of the first parts.
+        /// </summary>
+        private void countAsPlayable(IEnumerable<HitObject> added)
+        {
+            try
+            {
+                var property = typeof(JudgementProcessor).GetProperty("MaxHits", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
+                int extra = added.Sum(countRecursively);
+                property.SetValue(ScoreProcessor, (int)property.GetValue(ScoreProcessor)! + extra);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"OSU SR: could not extend the score processor ({ex.Message})");
+            }
+
+            static int countRecursively(HitObject h) => 1 + h.NestedHitObjects.Sum(countRecursively);
+        }
+
+        private void updateMusic(double time)
+        {
             bool paused = GameplayClockContainer.IsPaused.Value;
 
-            for (int i = 0; i < tracks.Length; i++)
+            for (int i = 0; i < tracks.Count; i++)
             {
                 var track = tracks[i];
 
-                if (track == null)
-                    continue;
-
-                if (paused || !SeriesTimeline.IsAudible(Slots, i, time))
+                if (paused || !SeriesTimeline.IsAudible(slots, i, time))
                 {
                     if (track.IsRunning)
                         track.Stop();
@@ -174,11 +250,11 @@ namespace osu.Game.OsuSR.Screens
                     continue;
                 }
 
-                tempos[i].Value = SeriesTimeline.TempoAt(Slots, i, time);
-                track.Volume.Value = SeriesTimeline.VolumeAt(Slots, i, time);
+                tempos[i].Value = SeriesTimeline.TempoAt(slots, i, time);
+                track.Volume.Value = SeriesTimeline.VolumeAt(slots, i, time);
 
                 // While its objects are in play the music is kept in time with them. After its last object it just runs on, ramping its tempo.
-                if (SeriesTimeline.TrackPositionAt(Slots, i, time) is double position)
+                if (SeriesTimeline.TrackPositionAt(slots, i, time) is double position)
                 {
                     position = Math.Max(0, position);
 
@@ -198,12 +274,12 @@ namespace osu.Game.OsuSR.Screens
         {
             if (e.Key == SegmentPlayer.MISCLASSIFIED_KEY && !e.Repeat && feedback != null)
             {
-                int part = SeriesTimeline.PartAt(Slots, GameplayClockContainer.CurrentTime);
+                int part = SeriesTimeline.PartAt(slots, GameplayClockContainer.CurrentTime);
 
                 if (reported.Add(part))
                 {
-                    var segment = Parts[part].Segment;
-                    double adjustment = feedback.ReportMisclassified(segment, Parts[part].Beatmap.BeatmapInfo);
+                    var segment = parts[part].Segment;
+                    double adjustment = feedback.ReportMisclassified(segment, parts[part].Beatmap.BeatmapInfo);
 
                     feedbackText.Text = $"Noté « mal classé » ({segment.Skillset.GetDescription()} sera plus strict : +{adjustment:P0})";
                     feedbackText.FadeIn(100).Then().Delay(2500).FadeOut(500);
@@ -217,24 +293,28 @@ namespace osu.Game.OsuSR.Screens
 
         public override bool OnExiting(ScreenExitEvent e)
         {
+            feed.Dispose();
             stopMusic();
+
+            // Leaving early still gives the results of the parts played so far.
+            if (Results.Count == 0)
+                Results = collectResults();
+
             return base.OnExiting(e);
         }
 
         private void stopMusic()
         {
-            for (int i = 0; i < tracks.Length; i++)
+            for (int i = 0; i < tracks.Count; i++)
             {
-                var track = tracks[i];
-
-                if (track == null)
-                    continue;
-
-                track.Stop();
-                track.RemoveAdjustment(AdjustableProperty.Tempo, tempos[i]);
-                track.Volume.Value = 1;
-                tracks[i] = null;
+                tracks[i].Stop();
+                tracks[i].RemoveAdjustment(AdjustableProperty.Tempo, tempos[i]);
+                tracks[i].Volume.Value = 1;
             }
+
+            tracks.Clear();
+            tempos.Clear();
+            lastSeek.Clear();
         }
 
         // Results are never shown (ShowResults = false); the training session shows its own summary instead.
@@ -245,19 +325,37 @@ namespace osu.Game.OsuSR.Screens
             if (!this.IsCurrentScreen())
                 return;
 
+            Results = collectResults();
+            this.Exit();
+        }
+
+        /// <summary>Results of the parts that were played at least partly (a part that was never reached has nothing judged).</summary>
+        private IReadOnlyList<SegmentResult> collectResults()
+        {
             var results = new List<SegmentResult>();
             long previousScore = 0;
 
-            for (int i = 0; i < Parts.Count; i++)
+            for (int i = 0; i < parts.Count; i++)
             {
-                double accuracy = maximum[i] > 0 ? numeric[i] / maximum[i] : 1;
-                long score = Math.Max(0, Math.Max(scoreAtEnd[i], previousScore) - previousScore);
-                previousScore = Math.Max(scoreAtEnd[i], previousScore);
-                results.Add(new SegmentResult(Parts[i].Segment, accuracy, combos[i], score));
+                var part = stats[i];
+
+                if (part.Maximum <= 0)
+                    continue;
+
+                long score = Math.Max(0, Math.Max(part.ScoreAtEnd, previousScore) - previousScore);
+                previousScore = Math.Max(part.ScoreAtEnd, previousScore);
+                results.Add(new SegmentResult(parts[i].Segment, part.Numeric / part.Maximum, part.Combo, score));
             }
 
-            Results = results;
-            this.Exit();
+            return results;
+        }
+
+        private class PartStats
+        {
+            public double Numeric;
+            public double Maximum;
+            public int Combo;
+            public long ScoreAtEnd;
         }
     }
 }

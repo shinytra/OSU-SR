@@ -379,13 +379,23 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             };
 
             var slots = SeriesTimeline.Build(parts);
-            var series = finder.CreateSeriesBeatmap(parts, slots);
+
+            // The first part creates the beatmap, the others are added to it (as they are while a series plays).
+            var series = finder.CreateSeriesBeatmap(finder.PrepareSeriesPart(parts[0]), slots[0]);
+            var added = finder.AppendSeriesPart(series, finder.PrepareSeriesPart(parts[1]), slots[1], slots[0].EndTime + slots[0].Gap / 2);
+
+            Assert.That(added, Has.Count.EqualTo(40));
 
             Assert.That(series.HitObjects, Has.Count.EqualTo(80));
             Assert.That(series.HitObjects.Select(h => h.StartTime), Is.Ordered.Ascending);
             Assert.That(series.HitObjects[0].StartTime, Is.EqualTo(slots[0].FirstObjectTime).Within(1));
             Assert.That(series.HitObjects[40].StartTime, Is.EqualTo(slots[1].FirstObjectTime).Within(1));
             Assert.That(slots[1].FirstObjectTime - series.HitObjects[39].GetEndTime(), Is.EqualTo(slots[0].Gap).Within(1));
+
+            // Each part keeps its own map's approach rate (7 is slower than 9).
+            Assert.That(((OsuHitObject)series.HitObjects[0]).TimePreempt, Is.EqualTo(600).Within(1));
+            Assert.That(((OsuHitObject)series.HitObjects[40]).TimePreempt, Is.EqualTo(900).Within(1));
+            Assert.That(series.Difficulty.ApproachRate, Is.EqualTo(9));
 
             // Each part starts a new combo.
             Assert.That(((OsuHitObject)series.HitObjects[40]).NewCombo, Is.True);

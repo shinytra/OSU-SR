@@ -85,7 +85,10 @@ namespace osu.Game.OsuSR.Screens
         /// </summary>
         public readonly BindableBool SeriesMode = new BindableBool();
 
-        /// <summary>How many segments a series lasts.</summary>
+        /// <summary>Series mode that never ends (until the player leaves): the next segments are found and loaded in the background while playing.</summary>
+        public readonly BindableBool InfiniteMode = new BindableBool();
+
+        /// <summary>How many segments a series lasts (unless it is infinite).</summary>
         public readonly BindableInt SeriesLength = new BindableInt(5) { MinValue = 1, MaxValue = 30 };
 
         /// <summary>Whether the next map's tempo has to be close to the current one's, so the beat doesn't jump between segments.</summary>
@@ -248,6 +251,11 @@ namespace osu.Game.OsuSR.Screens
                                             LabelText = "Mode série (aucune pause entre les passages)",
                                             Current = SeriesMode,
                                         },
+                                        new SettingsCheckbox
+                                        {
+                                            LabelText = "Série infinie (jusqu'à ce que tu quittes)",
+                                            Current = InfiniteMode,
+                                        },
                                         new SettingsSlider<int>
                                         {
                                             LabelText = "Nombre de passages de la série",
@@ -356,7 +364,7 @@ namespace osu.Game.OsuSR.Screens
                 updateFeedbackSummary();
 
                 stopSession(seriesPlayer.Results.Count > 0
-                    ? $"Série terminée : {results.Count} passage(s)."
+                    ? $"Série terminée : {results.Count} passage(s) joué(s)."
                     : null);
                 return;
             }
@@ -492,9 +500,11 @@ namespace osu.Game.OsuSR.Screens
             var pool = realm.Run(r => r.All<BeatmapInfo>()
                                        .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
                                                + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
+                                               + $" AND ({nameof(BeatmapInfo.Status)} == $3 OR {nameof(BeatmapInfo.Status)} == $4 OR {nameof(BeatmapInfo.Status)} == $5)"
                                                + $" AND {nameof(BeatmapInfo.Hidden)} == false"
                                                + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
-                                           osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor)
+                                           osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor,
+                                           (int)BeatmapOnlineStatus.Ranked, (int)BeatmapOnlineStatus.Approved, (int)BeatmapOnlineStatus.Loved)
                                        .AsEnumerable()
                                        .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM))
                                        .ToList());
@@ -650,7 +660,6 @@ namespace osu.Game.OsuSR.Screens
             preparationCancellation?.Cancel();
             var cancellation = preparationCancellation = new CancellationTokenSource();
 
-            int length = SeriesLength.Value;
             var skillsets = SelectedSkillsets;
             double min = MinimumStars.Value;
             double max = MaximumStars.Value;
@@ -658,92 +667,87 @@ namespace osu.Game.OsuSR.Screens
             bool matchBpm = MatchBpm.Value;
             finder.PurityAdjustments = Feedback.PurityAdjustments;
 
-            statusText.Text = $"Préparation de la série (0/{length})…";
-
-            var build = Task.Run(() => buildSeries(length, skillsets, min, max, preferTagged, matchBpm, cancellation.Token), cancellation.Token);
-            build.ContinueWith(_ => Schedule(() => handleSeriesReady(build, cancellation)), TaskContinuationOptions.None);
-        }
-
-        /// <summary>
-        /// Finds all the parts of a series (each with its pre-drop and post-drop) and puts them on one timeline.
-        /// A part is picked with a tempo close to the previous one when possible, but any tempo is allowed: the music is blended when they differ.
-        /// </summary>
-        private (List<SeriesPart> Parts, IReadOnlyList<SeriesSlot> Slots, IBeatmap Beatmap)? buildSeries(int length, Skillset[] skillsets, double min, double max, bool preferTagged, bool matchBpm,
-                                                                                                            CancellationToken cancellationToken)
-        {
-            var parts = new List<SeriesPart>();
+            // Only the feed's thread touches these.
             var played = new List<Skillset>();
             Guid? lastPlayed = null;
             double? bpm = null;
+            var seriesFinder = finder;
 
-            for (int i = 0; i < length; i++)
+            SeriesPart? findNext(CancellationToken token)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var found = findNextSegment(skillsets, min, max, preferTagged, matchBpm ? bpm : null, lastPlayed, played.ToArray(), cancellationToken);
+                var found = findNextSegment(skillsets, min, max, preferTagged, matchBpm ? bpm : null, lastPlayed, played.ToArray(), token);
 
                 if (found == null)
-                    break;
+                    return null;
 
                 var (working, segment) = found.Value;
-                parts.Add(new SeriesPart(working, finder.ExtendSegment(working, segment, PRE_DROP, POST_DROP, cancellationToken)));
-
                 played.Add(segment.Skillset);
                 lastPlayed = segment.BeatmapID;
                 bpm = working.BeatmapInfo.BPM;
 
-                int done = parts.Count;
-                Schedule(() =>
-                {
-                    if (running && !cancellationToken.IsCancellationRequested)
-                        statusText.Text = $"Préparation de la série ({done}/{length})…";
-                });
+                return new SeriesPart(working, seriesFinder.ExtendSegment(working, segment, PRE_DROP, POST_DROP, token));
             }
 
-            if (parts.Count == 0)
-                return null;
+            var feed = new SeriesFeed(findNext, (part, token) => seriesFinder.PrepareSeriesPart(part, token), InfiniteMode.Value ? int.MaxValue : SeriesLength.Value);
+            feed.Start();
 
-            var slots = SeriesTimeline.Build(parts);
-            return (parts, slots, finder.CreateSeriesBeatmap(parts, slots, cancellationToken));
+            statusText.Text = "Préparation du premier passage…";
+            waitForFirstPart(feed, cancellation);
         }
 
-        private void handleSeriesReady(Task<(List<SeriesPart> Parts, IReadOnlyList<SeriesSlot> Slots, IBeatmap Beatmap)?> build, CancellationTokenSource cancellation)
+        /// <summary>Starts the series as soon as its first part is ready: the others are found and added while it plays.</summary>
+        private void waitForFirstPart(SeriesFeed feed, CancellationTokenSource cancellation)
         {
             if (cancellation.IsCancellationRequested || !running)
-                return;
-
-            if (build.IsFaulted)
             {
-                Logger.Error(build.Exception, "OSU SR: failed to prepare the series");
-                statusText.Text = "Erreur pendant la préparation de la série (voir les logs).";
+                feed.Dispose();
+                return;
+            }
+
+            if (feed.NothingFound)
+            {
+                feed.Dispose();
+                statusText.Text = $"Aucun passage {string.Join(" / ", SelectedSkillsets.Select(s => s.GetDescription()))} trouvé dans les maps ranked/loved entre {MinimumStars.Value:N1} et {MaximumStars.Value:N1} étoiles.";
                 stopSession();
                 return;
             }
 
-            if (build.GetResultSafely() == null)
+            if (!feed.TryTake(out var first))
             {
-                statusText.Text = $"Aucun passage {string.Join(" / ", SelectedSkillsets.Select(s => s.GetDescription()))} trouvé dans les maps entre {MinimumStars.Value:N1} et {MaximumStars.Value:N1} étoiles.";
-                stopSession();
+                if (feed.Exhausted)
+                {
+                    feed.Dispose();
+                    statusText.Text = "Erreur pendant la préparation de la série (voir les logs).";
+                    stopSession();
+                    return;
+                }
+
+                Scheduler.AddDelayed(() => waitForFirstPart(feed, cancellation), 200);
                 return;
             }
 
-            var (parts, slots, composite) = build.GetResultSafely()!.Value;
-            var working = new SeriesWorkingBeatmap(parts, composite, SeriesTimeline.TotalLength(slots), audio);
+            var slots = new List<SeriesSlot>();
+            var slot = SeriesTimeline.Extend(slots, first.Part, null);
+            var composite = finder.CreateSeriesBeatmap(first, slot);
+            var working = new SeriesWorkingBeatmap(new[] { first.Part }, composite, SeriesTimeline.LIVE_LENGTH, audio);
 
             Ruleset.Value = osuRuleset;
             Beatmap.Value = working;
             Mods.Value = new[] { osuRuleset.CreateInstance().CreateMod<ModNoFail>()! };
 
-            ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = parts[0].Beatmap);
+            ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = first.Part.Beatmap);
 
-            statusText.Text = $"Série de {parts.Count} passage(s) : " + string.Join(" → ", parts.Select(p => p.Segment.Skillset.GetDescription()));
+            statusText.Text = InfiniteMode.Value ? "Série infinie (Échap pour quitter)" : $"Série de {SeriesLength.Value} passage(s)";
 
-            var player = new SeriesPlayer(parts, slots, Feedback);
+            var player = new SeriesPlayer(finder, composite, first.Part, slot, feed, Feedback);
 
             LoadComponentAsync(player, _ =>
             {
                 if (!running || !this.IsCurrentScreen())
+                {
+                    feed.Dispose();
                     return;
+                }
 
                 currentSeriesPlayer = player;
                 this.Push(player);
