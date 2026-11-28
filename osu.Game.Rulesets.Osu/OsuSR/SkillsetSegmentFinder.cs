@@ -47,6 +47,11 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         /// <summary>How far (ms) an edge may move when snapping to a bar line.</summary>
         public double MaximumSnap { get; init; } = 4_000;
 
+        /// <summary>The highest minimum purity a skillset can get from adjustments.</summary>
+        public const double MAXIMUM_PURITY = 0.95;
+
+        public IReadOnlyDictionary<Skillset, double> PurityAdjustments { get; set; } = new Dictionary<Skillset, double>();
+
         /// <summary>Overrides every skillset's minimum purity (for tests).</summary>
         public double? MinimumPurity { get; init; }
 
@@ -145,7 +150,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
             var sums = Enum.GetValues<Skillset>().ToDictionary(s => s, s => new SkillsetSums(profile, s));
             var own = sums[skillset];
-            double minimumPurity = MinimumPurity ?? DefaultMinimumPurity(skillset);
+            double minimumPurity = MinimumPurity ?? Math.Min(MAXIMUM_PURITY, DefaultMinimumPurity(skillset) + PurityAdjustments.GetValueOrDefault(skillset));
             var lengths = skillset == Skillset.Stamina ? StaminaSegmentLengths : SegmentLengths;
 
             var candidates = new List<(int First, int Last, double Length, double Score)>();

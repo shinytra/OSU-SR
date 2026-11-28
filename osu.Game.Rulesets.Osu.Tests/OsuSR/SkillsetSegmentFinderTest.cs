@@ -218,6 +218,27 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         }
 
         [Test]
+        public void TestPurityAdjustmentsMakeSegmentsStricter()
+        {
+            var beatmap = GetBeatmap("801165");
+            var profile = finder.Analyse(beatmap);
+            var strict = new SkillsetSegmentFinder { PurityAdjustments = new Dictionary<Skillset, double> { [Skillset.Streams] = 0.2 } };
+
+            var normalSegments = finder.FindSegments(profile, Skillset.Streams, maxSegments: int.MaxValue);
+            var strictSegments = strict.FindSegments(profile, Skillset.Streams, maxSegments: int.MaxValue);
+
+            double minimum = SkillsetSegmentFinder.DefaultMinimumPurity(Skillset.Streams) + 0.2;
+
+            Assert.That(strictSegments.Count, Is.LessThanOrEqualTo(normalSegments.Count));
+            Assert.That(strictSegments.All(s => s.Purity >= minimum));
+
+            // A skillset without adjustment is unaffected.
+            var strictJumps = strict.FindSegments(profile, Skillset.Jumps, maxSegments: 3).Select(s => s.StartTime);
+            var normalJumps = finder.FindSegments(profile, Skillset.Jumps, maxSegments: 3).Select(s => s.StartTime);
+            Assert.That(strictJumps, Is.EqualTo(normalJumps));
+        }
+
+        [Test]
         public void TestNoSegmentWithoutMatchingPatterns()
         {
             var profile = finder.Analyse(createBeatmap(squareJumps(0, 80)));

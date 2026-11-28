@@ -26,6 +26,11 @@ namespace osu.Game.OsuSR
                                                                               CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Extra minimum purity per skillset, on top of each skillset's default. Raised by "wrongly classified" reports.
+        /// </summary>
+        IReadOnlyDictionary<Skillset, double> PurityAdjustments { get; set; }
+
+        /// <summary>
         /// Calculates the star rating of one segment alone, as if the rest of the map didn't exist.
         /// </summary>
         double CalculateStarRating(IWorkingBeatmap beatmap, MapSegment segment, CancellationToken cancellationToken = default);
