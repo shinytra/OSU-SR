@@ -38,6 +38,7 @@ namespace osu.Game.OsuSR.Screens
         public readonly MapSegment Segment;
 
         private readonly SegmentFeedbackStore? feedback;
+        private readonly bool seamless;
         private OsuSpriteText feedbackText = null!;
         private bool reported;
 
@@ -55,7 +56,11 @@ namespace osu.Game.OsuSR.Screens
 
         /// <param name="segment">The segment to play.</param>
         /// <param name="feedback">Where "wrongly classified" reports go. Reports are ignored when null.</param>
-        public SegmentPlayer(MapSegment segment, SegmentFeedbackStore? feedback = null)
+        /// <param name="seamless">
+        /// Whether this segment is part of a series with no pause: its music fades in over the lead-in (so it reaches full volume on the first note),
+        /// and fades out during the exit delay (so it doesn't cut off).
+        /// </param>
+        public SegmentPlayer(MapSegment segment, SegmentFeedbackStore? feedback = null, bool seamless = false)
             : base(new PlayerConfiguration
             {
                 ShowResults = false,
@@ -65,6 +70,7 @@ namespace osu.Game.OsuSR.Screens
         {
             Segment = segment;
             this.feedback = feedback;
+            this.seamless = seamless;
         }
 
         protected override void LoadComplete()
@@ -82,8 +88,13 @@ namespace osu.Game.OsuSR.Screens
 
             ScoreProcessor.HasCompleted.BindValueChanged(completed =>
             {
-                if (completed.NewValue)
-                    Scheduler.AddDelayed(finish, EXIT_DELAY);
+                if (!completed.NewValue)
+                    return;
+
+                if (seamless)
+                    this.TransformBindableTo(Beatmap.Value.Track.Volume, 0, EXIT_DELAY, Easing.InQuad);
+
+                Scheduler.AddDelayed(finish, EXIT_DELAY);
             });
         }
 
@@ -106,6 +117,13 @@ namespace osu.Game.OsuSR.Screens
         {
             // Start at the segment (with its lead-in) instead of the beginning of the map.
             GameplayClockContainer.Reset(Segment.StartTime, startClock: true);
+
+            // The segment starts on a bar line: bring the music in over the lead-in, so it is at full volume as the first notes arrive.
+            if (seamless)
+            {
+                Beatmap.Value.Track.Volume.Value = 0;
+                this.TransformBindableTo(Beatmap.Value.Track.Volume, 1, Segment.FirstObjectTime - Segment.StartTime, Easing.OutQuad);
+            }
         }
 
         // Results are never shown (ShowResults = false); the training session shows its own summary instead.
