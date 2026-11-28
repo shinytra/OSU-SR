@@ -95,6 +95,25 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         }
 
         [Test]
+        public void TestSegmentStarRatingIsOfThePlayedPartOnly()
+        {
+            var beatmap = GetBeatmap("801165");
+            double mapStars = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap).Calculate().StarRating;
+            var segments = finder.FindSegments(beatmap, Skillset.Streams, maxSegments: 3);
+
+            Assert.That(segments, Is.Not.Empty);
+
+            foreach (var segment in segments)
+            {
+                double stars = finder.CalculateStarRating(beatmap, segment);
+                TestContext.Out.WriteLine($"{segment}: {stars:N2}★ (map {mapStars:N2}★)");
+
+                Assert.That(stars, Is.GreaterThan(0));
+                Assert.That(stars, Is.LessThan(mapStars));
+            }
+        }
+
+        [Test]
         public void TestStreamIsLabelledAsStream()
         {
             var notes = finder.Analyse(createBeatmap(stream(0, 40, spacing: 30))).Notes;

@@ -26,6 +26,11 @@ namespace osu.Game.OsuSR
                                                                               CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Calculates the star rating of one segment alone, as if the rest of the map didn't exist.
+        /// </summary>
+        double CalculateStarRating(IWorkingBeatmap beatmap, MapSegment segment, CancellationToken cancellationToken = default);
+
+        /// <summary>
         /// Creates the mod that restricts gameplay to the given segment.
         /// </summary>
         Mod CreateSegmentMod(MapSegment segment);

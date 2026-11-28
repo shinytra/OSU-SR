@@ -103,6 +103,12 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                             .ToDictionary(r => r.Skillset, r => r.Segments);
         }
 
+        public double CalculateStarRating(IWorkingBeatmap beatmap, MapSegment segment, CancellationToken cancellationToken = default)
+        {
+            var calculator = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);
+            return calculator.Calculate(new[] { CreateSegmentMod(segment) }, cancellationToken).StarRating;
+        }
+
         public Mod CreateSegmentMod(MapSegment segment) => new OsuModSegment
         {
             FirstObjectTime = { Value = segment.FirstObjectTime },
