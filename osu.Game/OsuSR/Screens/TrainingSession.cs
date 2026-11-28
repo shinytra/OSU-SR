@@ -43,7 +43,7 @@ namespace osu.Game.OsuSR.Screens
 
         /// <summary>How many maps to try before giving up on finding a playable segment.</summary>
         /// <remarks>Some skillsets only exist in a few maps, so this is generous.</remarks>
-        private const int max_attempts = 40;
+        private const int max_attempts = 150;
 
         /// <summary>How many of the last maps played are avoided in a series, so it doesn't come back to the same few.</summary>
         private const int recent_maps_to_avoid = 6;
@@ -600,14 +600,10 @@ namespace osu.Game.OsuSR.Screens
             // With several skillsets, prefer the ones played least recently, so segments alternate between them.
             var preference = skillsets.OrderBy(s => Array.LastIndexOf(recentSkillsets, s)).ThenBy(_ => Random.Shared.Next()).ToArray();
 
-            for (int attempt = 0; attempt < max_attempts; attempt++)
+            // Every map is tried at most once, in a random order (the favoured ones first); the ones played lately come last, so a small library never runs dry.
+            foreach (var id in tryOrder(pool, recentMaps).Take(max_attempts))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
-                var id = pickWeighted(pool);
-
-                if (recentMaps.Contains(id) && pool.Count > recentMaps.Count)
-                    continue;
 
                 var info = realm.Run(r => r.Find<BeatmapInfo>(id)?.Detach());
 
@@ -667,19 +663,11 @@ namespace osu.Game.OsuSR.Screens
             return null;
         }
 
-        private static Guid pickWeighted(IReadOnlyList<(Guid ID, double Weight, double BPM)> pool)
+        /// <summary>The maps in a random order where heavier weights tend to come first, and the recently played ones at the end.</summary>
+        private static IEnumerable<Guid> tryOrder(IReadOnlyList<(Guid ID, double Weight, double BPM)> pool, IReadOnlyCollection<Guid> recentMaps)
         {
-            double roll = Random.Shared.NextDouble() * pool.Sum(p => p.Weight);
-
-            foreach (var (id, weight, _) in pool)
-            {
-                roll -= weight;
-
-                if (roll < 0)
-                    return id;
-            }
-
-            return pool[^1].ID;
+            var keyed = pool.Select(p => (p.ID, Key: -Math.Log(1 - Random.Shared.NextDouble()) / Math.Max(p.Weight, 1e-6), Recent: recentMaps.Contains(p.ID)));
+            return keyed.OrderBy(k => k.Recent).ThenBy(k => k.Key).Select(k => k.ID);
         }
 
         /// <param name="working">The map to play.</param>
@@ -778,6 +766,13 @@ namespace osu.Game.OsuSR.Screens
 
                 double offset = adaptive ? seriesFeed?.StarOffset ?? 0 : 0;
                 var found = findNextSegment(pool, skillsets, Math.Max(0, min + offset), max + offset, matchBpm ? bpm : null, recentMaps, played.ToArray(), token);
+
+                // Nothing in the shifted range: try the range as chosen, and then without keeping the tempo, before giving up.
+                if (found == null && offset != 0)
+                    found = findNextSegment(pool, skillsets, min, max, matchBpm ? bpm : null, recentMaps, played.ToArray(), token);
+
+                if (found == null && matchBpm && bpm != null)
+                    found = findNextSegment(pool, skillsets, Math.Max(0, min + offset), max + offset, null, recentMaps, played.ToArray(), token);
 
                 if (found == null)
                     return null;

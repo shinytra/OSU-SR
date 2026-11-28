@@ -20,6 +20,7 @@ namespace osu.Game.OsuSR
         public const int LOOKAHEAD = 2;
 
         private const int max_failures = 5;
+        private const int max_misses = 30;
 
         private readonly ISkillsetSegmentFinder finder;
         private readonly Func<CancellationToken, SeriesPart?> findNext;
@@ -100,6 +101,7 @@ namespace osu.Game.OsuSR
         {
             var token = cancellation.Token;
             int failures = 0;
+            int misses = 0;
 
             try
             {
@@ -117,9 +119,18 @@ namespace osu.Game.OsuSR
 
                         if (part == null)
                         {
+                            // A series that never ends doesn't give up because of a dry spell (a tight star range, the adaptive offset...): it waits and tries again.
+                            if (limit == int.MaxValue && Volatile.Read(ref produced) > 0 && ++misses < max_misses)
+                            {
+                                Thread.Sleep(2000);
+                                continue;
+                            }
+
                             noMapFound = true;
                             break;
                         }
+
+                        misses = 0;
 
                         var data = finder.PrepareSeriesPart(part, token);
 
