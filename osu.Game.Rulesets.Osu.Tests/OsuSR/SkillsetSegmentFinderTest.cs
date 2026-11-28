@@ -2,15 +2,19 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 using osu.Game.Beatmaps;
+using osu.Game.Beatmaps.ControlPoints;
 using osu.Game.OsuSR;
 using osu.Game.Rulesets.Difficulty;
 using osu.Game.Rulesets.Objects;
 using osu.Game.Rulesets.Osu.Difficulty;
+using osu.Game.Rulesets.Osu.Objects;
 using osu.Game.Rulesets.Osu.OsuSR;
 using osu.Game.Tests.Beatmaps;
+using osuTK;
 
 namespace osu.Game.Rulesets.Osu.Tests.OsuSR
 {
@@ -18,6 +22,9 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
     public class SkillsetSegmentFinderTest : DifficultyCalculatorTest
     {
         protected override string ResourceAssembly => "osu.Game.Rulesets.Osu.Tests";
+
+        private const double bpm = 180;
+        private const double beat = 60_000 / bpm;
 
         private readonly SkillsetSegmentFinder finder = new SkillsetSegmentFinder();
 
@@ -30,9 +37,13 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             int objectCount = beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo).HitObjects.Count;
 
             Assert.That(profile.Objects, Has.Count.EqualTo(objectCount - 1));
+            Assert.That(profile.Notes, Has.Count.EqualTo(profile.Objects.Count));
 
             foreach (var skillset in Enum.GetValues<Skillset>())
                 Assert.That(profile.Difficulties[skillset], Has.Count.EqualTo(profile.Objects.Count));
+
+            foreach (var pattern in Enum.GetValues<NotePattern>().Where(p => p != NotePattern.None))
+                TestContext.Out.WriteLine($"{pattern}: {profile.Notes.Count(n => n.Pattern.HasFlag(pattern))} / {profile.Notes.Count}");
         }
 
         [Test]
@@ -42,7 +53,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             var profile = finder.Analyse(beatmap);
             var segments = finder.FindSegments(profile, skillset, maxSegments: 3);
 
-            Assert.That(segments, Has.Count.EqualTo(3));
+            Assert.That(segments, Has.Count.LessThanOrEqualTo(3));
             Assert.That(segments.Select(s => s.Score), Is.Ordered.Descending);
 
             double mapEnd = profile.Objects.Max(o => o.GetEndTime());
@@ -56,7 +67,8 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
                 Assert.That(segment.StartTime, Is.LessThan(segment.FirstObjectTime).Or.EqualTo(0));
                 Assert.That(segment.EndTime, Is.LessThanOrEqualTo(mapEnd));
                 Assert.That(segment.FirstObjectTime - segment.StartTime, Is.LessThanOrEqualTo(finder.LeadIn));
-                Assert.That(segment.ObjectCount, Is.GreaterThan(0));
+                Assert.That(segment.ObjectCount, Is.GreaterThanOrEqualTo(finder.MinimumMatchingObjects));
+                Assert.That(segment.Purity, Is.GreaterThanOrEqualTo(SkillsetSegmentFinder.DefaultMinimumPurity(skillset)));
             }
 
             foreach (var a in segments)
@@ -71,29 +83,178 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         {
             var profile = finder.Analyse(GetBeatmap("801165"));
             var all = finder.FindSegments(profile, skillset, maxSegments: int.MaxValue);
-            var hardest = finder.FindSegments(profile, skillset, maxSegments: 1).Single();
+            var hardest = finder.FindSegments(profile, skillset, maxSegments: 1);
 
-            Assert.That(hardest.Score, Is.EqualTo(all.Max(s => s.Score)));
+            if (all.Count == 0)
+            {
+                Assert.That(hardest, Is.Empty);
+                return;
+            }
+
+            Assert.That(hardest.Single().Score, Is.EqualTo(all.Max(s => s.Score)));
         }
 
         [Test]
-        public void TestSkillsetsPickDifferentParts()
+        public void TestStreamIsLabelledAsStream()
         {
-            var profile = finder.Analyse(GetBeatmap("801165"));
+            var notes = finder.Analyse(createBeatmap(stream(0, 40, spacing: 30))).Notes;
 
-            var aim = finder.FindSegments(profile, Skillset.Aim, maxSegments: 1).Single();
-            var speed = finder.FindSegments(profile, Skillset.Speed, maxSegments: 1).Single();
+            Assert.That(notes.Count(n => n.Pattern.HasFlag(NotePattern.Stream)), Is.EqualTo(notes.Count));
+            Assert.That(notes.Count(n => n.Pattern.HasFlag(NotePattern.Deathstream)), Is.EqualTo(notes.Count));
+            Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.SpacedStream)), Is.False);
+            Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Jump)), Is.False);
+            Assert.That(notes.All(n => Math.Abs(n.BeatFraction - 0.25) < 0.01));
+        }
 
-            // A segment picked for a skillset should score at least as high on that skillset as the one picked for another skillset.
-            Assert.That(aim.Scores[Skillset.Aim], Is.GreaterThanOrEqualTo(speed.Scores[Skillset.Aim]));
-            Assert.That(speed.Scores[Skillset.Speed], Is.GreaterThanOrEqualTo(aim.Scores[Skillset.Speed]));
+        [Test]
+        public void TestWideStreamIsSpaced()
+        {
+            var notes = finder.Analyse(createBeatmap(stream(0, 24, spacing: 90))).Notes;
+
+            Assert.That(notes.Count(n => n.Pattern.HasFlag(NotePattern.SpacedStream)), Is.EqualTo(notes.Count));
+        }
+
+        [Test]
+        public void TestShortChainsAreBursts()
+        {
+            var objects = new List<HitObject>();
+
+            // Five 5-note bursts, one beat apart.
+            for (int i = 0; i < 5; i++)
+                objects.AddRange(stream(i * 2 * beat, 5, spacing: 20));
+
+            var notes = finder.Analyse(createBeatmap(objects)).Notes;
+
+            Assert.That(notes.All(n => n.ChainLength == 5));
+            Assert.That(notes.All(n => n.Pattern.HasFlag(NotePattern.Burst) && n.Pattern.HasFlag(NotePattern.Alt)));
+            Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Stream)), Is.False);
+        }
+
+        [Test]
+        public void TestSquareJumpsAreSnapAim()
+        {
+            var notes = finder.Analyse(createBeatmap(squareJumps(0, 40))).Notes;
+
+            Assert.That(notes.Count(n => n.Pattern.HasFlag(NotePattern.Jump)), Is.GreaterThan(notes.Count * 0.9));
+            Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.FlowAim)), Is.False);
+            Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Stream)), Is.False);
+        }
+
+        [Test]
+        public void TestStraightJumpsAreFlowAim()
+        {
+            var objects = new List<HitObject>();
+
+            // 1/2 notes going around a big circle: each turn is small, so the movement flows.
+            for (int i = 0; i < 40; i++)
+            {
+                double a = i * Math.PI / 6;
+                objects.Add(circle(i * beat / 2, new Vector2(256 + 150 * (float)Math.Cos(a), 192 + 150 * (float)Math.Sin(a))));
+            }
+
+            var notes = finder.Analyse(createBeatmap(objects)).Notes;
+
+            Assert.That(notes.Count(n => n.Pattern.HasFlag(NotePattern.FlowAim)), Is.GreaterThan(notes.Count * 0.9));
+            Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Jump)), Is.False);
+        }
+
+        [Test]
+        public void TestSkillsetsPickTheirOwnPart()
+        {
+            // 20 s of square jumps, a 3 s break, then 20 s of streams.
+            double streamStart = 20_000 + 3_000;
+            var objects = squareJumps(0, (int)(20_000 / (beat / 2))).Concat(stream(streamStart, (int)(20_000 / (beat / 4)), spacing: 30)).ToList();
+
+            var profile = finder.Analyse(createBeatmap(objects));
+
+            var jumps = finder.FindSegments(profile, Skillset.Jumps, maxSegments: 1).Single();
+            var streams = finder.FindSegments(profile, Skillset.Streams, maxSegments: 1).Single();
+
+            TestContext.Out.WriteLine(jumps);
+            TestContext.Out.WriteLine(streams);
+
+            Assert.That(jumps.EndTime, Is.LessThan(streamStart));
+            Assert.That(streams.FirstObjectTime, Is.GreaterThanOrEqualTo(streamStart));
+            Assert.That(jumps.Purity, Is.GreaterThan(0.9));
+            Assert.That(streams.Purity, Is.GreaterThan(0.9));
+        }
+
+        [Test]
+        public void TestNoSegmentWithoutMatchingPatterns()
+        {
+            var profile = finder.Analyse(createBeatmap(squareJumps(0, 80)));
+
+            Assert.That(finder.FindSegments(profile, Skillset.Streams), Is.Empty);
+            Assert.That(finder.FindSegments(profile, Skillset.Stamina), Is.Empty);
+            Assert.That(finder.FindSegments(profile, Skillset.Jumps), Is.Not.Empty);
+        }
+
+        [Test]
+        public void TestSegmentsSnapToBars()
+        {
+            var profile = finder.Analyse(createBeatmap(squareJumps(0, 400)));
+            var segments = finder.FindSegments(profile, Skillset.Jumps, maxSegments: 3);
+            double bar = beat * 4;
+
+            Assert.That(segments, Is.Not.Empty);
+
+            foreach (var segment in segments)
+            {
+                TestContext.Out.WriteLine(segment);
+
+                // Edges are on bar lines, unless the map itself starts or ends there.
+                if (segment.FirstObjectTime > profile.Objects[0].StartTime)
+                    Assert.That(offBar(segment.FirstObjectTime), Is.EqualTo(0).Within(1));
+
+                if (segment.EndTime < profile.Objects[^1].GetEndTime())
+                    Assert.That(offBar(segment.EndTime), Is.EqualTo(0).Within(1));
+            }
+
+            double offBar(double time) => Math.Abs(time / bar - Math.Round(time / bar)) * bar;
         }
 
         [Test]
         public void TestEmptyBeatmap()
         {
             var beatmap = new TestWorkingBeatmap(new Beatmap { BeatmapInfo = { Ruleset = new OsuRuleset().RulesetInfo } });
-            Assert.That(finder.FindSegments(beatmap, Skillset.Aim), Is.Empty);
+            Assert.That(finder.FindSegments(beatmap, Skillset.Jumps), Is.Empty);
+        }
+
+        private static IEnumerable<HitObject> stream(double startTime, int count, float spacing)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                // Zigzag along the playfield so the stream stays on screen.
+                float x = 50 + (i * spacing) % 400;
+                float y = (i * spacing) / 400 % 2 == 0 ? 150 : 250;
+                yield return circle(startTime + i * beat / 4, new Vector2(x, y));
+            }
+        }
+
+        private static IEnumerable<HitObject> squareJumps(double startTime, int count)
+        {
+            var corners = new[] { new Vector2(100, 80), new Vector2(400, 80), new Vector2(400, 300), new Vector2(100, 300) };
+
+            for (int i = 0; i < count; i++)
+                yield return circle(startTime + i * beat / 2, corners[i % 4]);
+        }
+
+        private static HitCircle circle(double time, Vector2 position) => new HitCircle { StartTime = time, Position = position };
+
+        private static TestWorkingBeatmap createBeatmap(IEnumerable<HitObject> objects)
+        {
+            var beatmap = new Beatmap
+            {
+                BeatmapInfo =
+                {
+                    Ruleset = new OsuRuleset().RulesetInfo,
+                    Difficulty = { CircleSize = 4, ApproachRate = 9, OverallDifficulty = 8 },
+                },
+                HitObjects = objects.ToList(),
+            };
+
+            beatmap.ControlPointInfo.Add(0, new TimingControlPoint { BeatLength = beat });
+            return new TestWorkingBeatmap(beatmap);
         }
 
         protected override DifficultyCalculator CreateDifficultyCalculator(IWorkingBeatmap beatmap) => new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);

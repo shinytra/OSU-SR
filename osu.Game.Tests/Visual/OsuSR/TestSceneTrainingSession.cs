@@ -18,14 +18,23 @@ namespace osu.Game.Tests.Visual.OsuSR
         private TrainingSession session = null!;
 
         // Short segments so a full segment plays within the test's timeouts.
-        private readonly SkillsetSegmentFinder finder = new SkillsetSegmentFinder { SegmentLength = 2000, LeadIn = 500, MinimumGap = 0 };
+        private readonly SkillsetSegmentFinder finder = new SkillsetSegmentFinder
+        {
+            SegmentLengths = new[] { 2000.0 },
+            LeadIn = 500,
+            MinimumGap = 0,
+            SnapToBars = false,
+            // Accept any part of the test map, whatever its patterns.
+            MinimumPurity = 0,
+            MinimumMatchingObjects = 0,
+        };
 
         [Test]
         public void TestSegmentsChain()
         {
             AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
 
-            AddStep("enter aim session", () => Game.ScreenStack.Push(session = new TrainingSession(Skillset.Aim, finder)));
+            AddStep("enter jumps session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps }, finder)));
             AddUntilStep("wait for session", () => session.IsCurrentScreen());
 
             AddStep("allow any star rating", () =>
@@ -55,9 +64,37 @@ namespace osu.Game.Tests.Visual.OsuSR
         }
 
         [Test]
+        public void TestMixedSkillsetsAlternate()
+        {
+            AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
+
+            AddStep("enter mixed session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps, Skillset.Streams }, finder)));
+            AddUntilStep("wait for session", () => session.IsCurrentScreen());
+            AddAssert("both skillsets selected", () => session.SelectedSkillsets, () => Is.EquivalentTo(new[] { Skillset.Jumps, Skillset.Streams }));
+
+            AddStep("allow any star rating", () =>
+            {
+                session.MinimumStars.Value = 0;
+                session.MaximumStars.Value = 12;
+            });
+            AddStep("start", () => session.StartSession());
+
+            SegmentPlayer first = null!;
+
+            AddUntilStep("wait for first segment", () => (first = (Game.ScreenStack.CurrentScreen as SegmentPlayer)!) != null);
+            AddUntilStep("wait for return to session", () => session.IsCurrentScreen());
+            AddUntilStep("second segment uses the other skillset", () => Game.ScreenStack.CurrentScreen is SegmentPlayer second && second != first
+                                                                          && second.Segment.Skillset != first.Segment.Skillset);
+
+            AddStep("quit segment", () => Game.ScreenStack.CurrentScreen.Exit());
+            AddUntilStep("back at session setup", () => session.IsCurrentScreen());
+            AddStep("exit session", () => session.Exit());
+        }
+
+        [Test]
         public void TestNoMapsInRange()
         {
-            AddStep("enter aim session", () => Game.ScreenStack.Push(session = new TrainingSession(Skillset.Aim, finder)));
+            AddStep("enter jumps session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps }, finder)));
             AddUntilStep("wait for session", () => session.IsCurrentScreen());
 
             AddStep("start", () => session.StartSession());

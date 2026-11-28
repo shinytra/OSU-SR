@@ -19,6 +19,13 @@ namespace osu.Game.OsuSR
         IReadOnlyList<MapSegment> FindSegments(IWorkingBeatmap beatmap, Skillset skillset, int maxSegments, CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Same as <see cref="FindSegments(IWorkingBeatmap, Skillset, int, CancellationToken)"/> for several skillsets at once, analysing the map only once.
+        /// Skillsets without any segment in this map are left out.
+        /// </summary>
+        IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindSegments(IWorkingBeatmap beatmap, IEnumerable<Skillset> skillsets, int maxSegments,
+                                                                             CancellationToken cancellationToken = default);
+
+        /// <summary>
         /// Creates the mod that restricts gameplay to the given segment.
         /// </summary>
         Mod CreateSegmentMod(MapSegment segment);
