@@ -459,7 +459,7 @@ namespace osu.Game.OsuSR.Screens
             countdownText.FadeOut(200);
             setupPanel.FadeIn(200);
             updateFeedbackSummary();
-            statusText.Text = summary ?? (results.Count > 0 ? "Session terminée." : string.Empty);
+            statusText.Text = string.Join("\n", new[] { summary ?? (results.Count > 0 ? "Session terminée." : string.Empty) }.Concat(SessionSummary.Build(results)).Where(l => l.Length > 0));
         }
 
         /// <summary>Series fade the music out and in, so the volume has to be put back for the menus.</summary>
