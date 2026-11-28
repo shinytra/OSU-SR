@@ -24,9 +24,7 @@ namespace osu.Game.OsuSR
         private const string cache_file = "segment-cache.json";
 
         private readonly Storage storage;
-        private readonly object syncRoot = new object();
-        private readonly Dictionary<string, MapSegment[]> entries = new Dictionary<string, MapSegment[]>();
-        private bool dirty;
+        private readonly State state;
 
         private readonly string signature;
 
@@ -36,15 +34,36 @@ namespace osu.Game.OsuSR
         {
             this.signature = signature;
             this.storage = storage.GetStorageForDirectory(directory);
+            state = new State();
             load();
+        }
+
+        private SegmentCache(SegmentCache other, string signature)
+        {
+            this.signature = signature;
+            storage = other.storage;
+            state = other.state;
+        }
+
+        /// <summary>
+        /// The same cache for other circumstances (other mods, other weights): what is kept for one is not seen by the other.
+        /// Both share what is saved and loaded, and can be used at the same time.
+        /// </summary>
+        public SegmentCache WithSignature(string newSignature) => new SegmentCache(this, newSignature);
+
+        private class State
+        {
+            public readonly object SyncRoot = new object();
+            public readonly Dictionary<string, MapSegment[]> Entries = new Dictionary<string, MapSegment[]>();
+            public bool Dirty;
         }
 
         public int Count
         {
             get
             {
-                lock (syncRoot)
-                    return entries.Count;
+                lock (state.SyncRoot)
+                    return state.Entries.Count;
             }
         }
 
@@ -54,9 +73,9 @@ namespace osu.Game.OsuSR
         /// <param name="segments">What was remembered, if anything.</param>
         public bool TryGet(string mapHash, Skillset skillset, double purityAdjustment, out IReadOnlyList<MapSegment> segments)
         {
-            lock (syncRoot)
+            lock (state.SyncRoot)
             {
-                if (entries.TryGetValue(key(mapHash, skillset, purityAdjustment), out var found))
+                if (state.Entries.TryGetValue(key(mapHash, skillset, purityAdjustment), out var found))
                 {
                     segments = found;
                     return true;
@@ -70,10 +89,10 @@ namespace osu.Game.OsuSR
         /// <summary>Remembers the segments of a map for a skillset (none is a result too).</summary>
         public void Set(string mapHash, Skillset skillset, double purityAdjustment, IEnumerable<MapSegment> segments)
         {
-            lock (syncRoot)
+            lock (state.SyncRoot)
             {
-                entries[key(mapHash, skillset, purityAdjustment)] = segments.ToArray();
-                dirty = true;
+                state.Entries[key(mapHash, skillset, purityAdjustment)] = segments.ToArray();
+                state.Dirty = true;
             }
         }
 
@@ -82,13 +101,13 @@ namespace osu.Game.OsuSR
         {
             Dictionary<string, MapSegment[]> snapshot;
 
-            lock (syncRoot)
+            lock (state.SyncRoot)
             {
-                if (!dirty)
+                if (!state.Dirty)
                     return;
 
-                snapshot = new Dictionary<string, MapSegment[]>(entries);
-                dirty = false;
+                snapshot = new Dictionary<string, MapSegment[]>(state.Entries);
+                state.Dirty = false;
             }
 
             try
@@ -121,7 +140,7 @@ namespace osu.Game.OsuSR
                 string prefix = $"{VERSION}|";
 
                 foreach (var entry in loaded.Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal)))
-                    entries[entry.Key] = entry.Value;
+                    state.Entries[entry.Key] = entry.Value;
             }
             catch (Exception ex)
             {

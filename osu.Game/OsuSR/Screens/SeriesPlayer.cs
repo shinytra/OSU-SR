@@ -358,7 +358,8 @@ namespace osu.Game.OsuSR.Screens
                     continue;
                 }
 
-                tempos[i].Value = SeriesTimeline.TempoAt(slots, i, time);
+                // The gameplay itself may be sped up or slowed down by a mod (double time, half time): the music of each part follows.
+                tempos[i].Value = SeriesTimeline.TempoAt(slots, i, time) * Beatmap.Value.Track.Rate;
                 track.Volume.Value = SeriesTimeline.VolumeAt(slots, i, time);
 
                 // While its objects are in play the music is kept in time with them. After its last object it just runs on, ramping its tempo.

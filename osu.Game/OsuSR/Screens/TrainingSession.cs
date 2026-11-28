@@ -2,6 +2,7 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -145,6 +146,7 @@ namespace osu.Game.OsuSR.Screens
         private OsuSpriteText statusText = null!;
         private OsuSpriteText indexText = null!;
         private CancellationTokenSource? indexCancellation;
+        private Thread? indexThread;
         private OsuSpriteText lastResultText = null!;
         private OsuSpriteText countdownText = null!;
 
@@ -758,15 +760,28 @@ namespace osu.Game.OsuSR.Screens
             double min = MinimumStars.Value * map_stars_lower_factor;
             double max = MaximumStars.Value * map_stars_upper_factor;
 
-            new Thread(() => runIndexing(includeUnknown, min, max, cancellation.Token))
+            // The previous run (other mods, other range) is told to stop and has to be over before this one starts: they share the finder.
+            var previous = indexThread;
+            var view = segmentCache;
+
+            indexThread = new Thread(() =>
+            {
+                previous?.Join();
+                runIndexing(view, includeUnknown, min, max, cancellation.Token);
+            })
             {
                 Name = "OSU SR library index",
                 IsBackground = true,
                 Priority = ThreadPriority.BelowNormal,
-            }.Start();
+            };
+
+            indexThread.Start();
         }
 
-        private void runIndexing(bool includeUnknown, double min, double max, CancellationToken token)
+        /// <summary>The workers of the index: one per core. Speed matters more than the game's frame rate while the library is being analysed (the first time only).</summary>
+        private static int indexWorkers => Math.Max(1, Environment.ProcessorCount);
+
+        private void runIndexing(SegmentCache cache, bool includeUnknown, double min, double max, CancellationToken token)
         {
             try
             {
@@ -774,47 +789,64 @@ namespace osu.Game.OsuSR.Screens
 
                 // The maps whose stars can fit the chosen range first (the pool's star filter is by map, so this uses the map's own rating).
                 var stars = realm.Run(r => library.ToDictionary(p => p.ID, p => r.Find<BeatmapInfo>(p.ID)?.StarRating ?? 0));
-                var order = library.OrderBy(p => stars[p.ID] >= min && stars[p.ID] <= max ? 0 : 1).ThenBy(_ => Random.Shared.Next()).ToList();
-                var all = Enum.GetValues<Skillset>();
+                var queue = new ConcurrentQueue<(Guid ID, double Weight, double BPM, string Hash)>(
+                    library.OrderBy(p => stars[p.ID] >= min && stars[p.ID] <= max ? 0 : 1).ThenBy(_ => Random.Shared.Next()));
 
+                int total = queue.Count;
                 int done = 0;
+                var all = Enum.GetValues<Skillset>();
+                var clock = Stopwatch.StartNew();
                 var lastSave = Stopwatch.StartNew();
+                object saveLock = new object();
 
-                foreach (var entry in order)
+                void work()
                 {
-                    token.ThrowIfCancellationRequested();
-
-                    var adjustments = finder.PurityAdjustments;
-                    var missing = all.Where(s => !segmentCache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
-
-                    if (missing.Length > 0 || needsStars(entry.Hash, all, adjustments))
+                    while (!token.IsCancellationRequested && queue.TryDequeue(out var entry))
                     {
-                        try
+                        var adjustments = finder.PurityAdjustments;
+                        var missing = all.Where(s => !cache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
+
+                        if (missing.Length > 0 || needsStars(cache, entry.Hash, all, adjustments))
                         {
-                            var info = realm.Run(r => r.Find<BeatmapInfo>(entry.ID)?.Detach());
+                            try
+                            {
+                                var info = realm.Run(r => r.Find<BeatmapInfo>(entry.ID)?.Detach());
 
-                            if (info != null)
-                                indexMap(info, all, missing, adjustments, token);
+                                if (info != null)
+                                    indexMap(cache, info, all, missing, adjustments, token);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                return;
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Log($"OSU SR: could not index a map ({ex.Message})");
+                            }
                         }
-                        catch (Exception ex) when (ex is not OperationCanceledException)
+
+                        int count = Interlocked.Increment(ref done);
+
+                        if (count % 20 == 0 || count == total)
+                            Schedule(() => indexText.Text = count == total ? $"Bibliothèque indexée ({count} maps)" : $"Indexation de la bibliothèque : {count}/{total} maps (une seule fois, tu peux jouer pendant ce temps)");
+
+                        lock (saveLock)
                         {
-                            Logger.Log($"OSU SR: could not index a map ({ex.Message})");
+                            if (lastSave.Elapsed.TotalSeconds > 60)
+                            {
+                                cache.Save();
+                                lastSave.Restart();
+                            }
                         }
-                    }
-
-                    done++;
-
-                    if (done % 20 == 0 || done == order.Count)
-                        Schedule(() => indexText.Text = done == order.Count ? $"Bibliothèque indexée ({done} maps)" : $"Indexation de la bibliothèque : {done}/{order.Count} maps (une seule fois, tu peux jouer pendant ce temps)");
-
-                    if (lastSave.Elapsed.TotalSeconds > 60)
-                    {
-                        segmentCache.Save();
-                        lastSave.Restart();
                     }
                 }
 
-                segmentCache.Save();
+                var workers = Enumerable.Range(0, indexWorkers).Select(i => new Thread(work) { Name = $"OSU SR library index {i}", IsBackground = true }).ToList();
+                workers.ForEach(w => w.Start());
+                workers.ForEach(w => w.Join());
+
+                cache.Save();
+                Logger.Log($"OSU SR: indexed {done} maps in {clock.Elapsed.TotalSeconds:N0} s ({done / Math.Max(1, clock.Elapsed.TotalSeconds):N1} maps/s, {workers.Count} workers)");
             }
             catch (OperationCanceledException)
             {
@@ -826,23 +858,27 @@ namespace osu.Game.OsuSR.Screens
             }
         }
 
-        private bool needsStars(string hash, Skillset[] all, IReadOnlyDictionary<Skillset, double> adjustments)
-            => all.Any(s => segmentCache.TryGet(hash, s, adjustments.GetValueOrDefault(s), out var segments) && segments.Any(x => x.StarRating == null));
+        private static bool needsStars(SegmentCache cache, string hash, Skillset[] all, IReadOnlyDictionary<Skillset, double> adjustments)
+            => all.Any(s => cache.TryGet(hash, s, adjustments.GetValueOrDefault(s), out var segments) && segments.Any(x => x.StarRating == null));
 
-        private void indexMap(BeatmapInfo info, Skillset[] all, Skillset[] missing, IReadOnlyDictionary<Skillset, double> adjustments, CancellationToken token)
+        private void indexMap(SegmentCache cache, BeatmapInfo info, Skillset[] all, Skillset[] missing, IReadOnlyDictionary<Skillset, double> adjustments, CancellationToken token)
         {
             var working = beatmaps.GetWorkingBeatmap(info);
 
             if (missing.Length > 0)
             {
-                var found = finder.FindSegments(working, missing, 3, token);
+                // Analysed and rated in one go: one analysis of the map for all of its parts.
+                var found = finder.FindRefinedSegments(working, missing, 3, token);
+
+                // Cancelled while analysing (other mods now): these results would be for the wrong ones.
+                token.ThrowIfCancellationRequested();
 
                 foreach (var skillset in missing)
-                    segmentCache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), found.TryGetValue(skillset, out var s) ? s : Array.Empty<MapSegment>());
+                    cache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), found.TryGetValue(skillset, out var s) ? s : Array.Empty<MapSegment>());
             }
 
             // Rate everything that isn't yet in one go: the map is analysed once for all of its parts.
-            var pending = all.Select(s => (Skillset: s, Segments: segmentCache.TryGet(info.MD5Hash, s, adjustments.GetValueOrDefault(s), out var found) ? found : Array.Empty<MapSegment>()))
+            var pending = all.Select(s => (Skillset: s, Segments: cache.TryGet(info.MD5Hash, s, adjustments.GetValueOrDefault(s), out var found) ? found : Array.Empty<MapSegment>()))
                              .Where(p => p.Segments.Any(x => x.StarRating == null))
                              .ToList();
 
@@ -851,11 +887,12 @@ namespace osu.Game.OsuSR.Screens
 
             token.ThrowIfCancellationRequested();
             var refined = finder.RefineSegments(working, pending.SelectMany(p => p.Segments).ToList(), token);
+            token.ThrowIfCancellationRequested();
             int index = 0;
 
             foreach (var (skillset, segments) in pending)
             {
-                segmentCache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), refined.Skip(index).Take(segments.Count).ToList());
+                cache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), refined.Skip(index).Take(segments.Count).ToList());
                 index += segments.Count;
             }
         }

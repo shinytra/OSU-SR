@@ -137,10 +137,12 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         public double CalculateStarRating(IWorkingBeatmap beatmap, MapSegment segment, CancellationToken cancellationToken = default)
         {
             var calculator = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);
-            return calculator.Calculate(new[] { CreateSegmentMod(segment) }, cancellationToken).StarRating;
+            return calculator.Calculate(Mods.Append(CreateSegmentMod(segment)), cancellationToken).StarRating;
         }
 
         public SkillsetWeights Weights { get; set; } = new SkillsetWeights();
+
+        public IReadOnlyList<Mod> Mods { get; set; } = Array.Empty<Mod>();
 
         /// <summary>A label counts if its weighted stars are at least this share of the hardest label's (6★ next to 8★ is 0.75: it doesn't count).</summary>
         public const double LABEL_STAR_RATIO = 0.85;
@@ -150,7 +152,28 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             if (segments.Count == 0)
                 return segments;
 
+            return refineSegments(Analyse(beatmap, null, cancellationToken), beatmap, segments, cancellationToken);
+        }
+
+        public IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindRefinedSegments(IWorkingBeatmap beatmap, IReadOnlyCollection<Skillset> skillsets, int maxSegments,
+                                                                                            CancellationToken cancellationToken = default)
+        {
             var profile = Analyse(beatmap, null, cancellationToken);
+            var found = skillsets.Distinct().ToDictionary(s => s, s => FindSegments(profile, s, maxSegments));
+            var all = found.Values.SelectMany(l => l).ToList();
+            var refined = all.Count == 0 ? all : refineSegments(profile, beatmap, all, cancellationToken);
+
+            int index = 0;
+            return found.ToDictionary(p => p.Key, p =>
+            {
+                var part = (IReadOnlyList<MapSegment>)refined.Skip(index).Take(p.Value.Count).ToList();
+                index += p.Value.Count;
+                return part;
+            });
+        }
+
+        private IReadOnlyList<MapSegment> refineSegments(SkillsetProfile profile, IWorkingBeatmap beatmap, IReadOnlyList<MapSegment> segments, CancellationToken cancellationToken)
+        {
             var objects = profile.Objects;
             var sums = SkillsetCombinations.LABEL_SKILLSETS.ToDictionary(l => l, l => new SkillsetSums(profile, l));
             var calculator = new OsuDifficultyCalculator(new OsuRuleset().RulesetInfo, beatmap);
@@ -172,12 +195,12 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                 double stars(HashSet<double>? only)
                 {
                     if (only == null)
-                        return calculator.Calculate(new[] { CreateSegmentMod(segment) }, cancellationToken).StarRating;
+                        return calculator.Calculate(Mods.Append(CreateSegmentMod(segment)), cancellationToken).StarRating;
 
                     var keep = KeepObjectsMod.Create(only, out var registration);
 
                     using (registration)
-                        return calculator.Calculate(new[] { CreateSegmentMod(segment), keep }, cancellationToken).StarRating;
+                        return calculator.Calculate(Mods.Append(CreateSegmentMod(segment)).Append(keep), cancellationToken).StarRating;
                 }
 
                 if (first < 0 || last < first)
@@ -307,7 +330,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         public SkillsetProfile Analyse(IWorkingBeatmap beatmap, IEnumerable<Mod>? mods = null, CancellationToken cancellationToken = default)
         {
             var calculator = new ProfilingDifficultyCalculator(beatmap);
-            calculator.Calculate(mods ?? Array.Empty<Mod>(), cancellationToken);
+            calculator.Calculate(mods ?? Mods, cancellationToken);
             return calculator.CreateProfile();
         }
 
@@ -489,7 +512,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         public ISeriesPartData PrepareSeriesPart(SeriesPart part, CancellationToken cancellationToken = default)
         {
-            var playable = (Beatmap<OsuHitObject>)part.Beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, new[] { CreateSegmentMod(part.Segment) }, cancellationToken);
+            var playable = (Beatmap<OsuHitObject>)part.Beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, Mods.Append(CreateSegmentMod(part.Segment)).ToArray(), cancellationToken);
             var timing = playable.ControlPointInfo.TimingPointAt(part.Segment.FirstObjectTime);
             return new OsuSeriesPartData(part, playable, new TimingControlPoint { BeatLength = timing.BeatLength, TimeSignature = timing.TimeSignature });
         }

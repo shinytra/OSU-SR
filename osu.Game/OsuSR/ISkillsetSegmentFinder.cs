@@ -37,6 +37,12 @@ namespace osu.Game.OsuSR
         /// </summary>
         double CalculateStarRating(IWorkingBeatmap beatmap, MapSegment segment, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// The mods the player plays with (easy, half time, hard rock, double time...). Segments are found and rated with them applied,
+        /// since a part is not the same part under double time or hard rock.
+        /// </summary>
+        IReadOnlyList<Mod> Mods { get; set; }
+
         /// <summary>Weights that make the star ratings of different skillsets comparable when deciding which skillsets a part really has.</summary>
         SkillsetWeights Weights { get; set; }
 
@@ -45,6 +51,13 @@ namespace osu.Game.OsuSR
         /// and the segment's star rating from those notes. Analyses the map once for all the segments.
         /// </summary>
         IReadOnlyList<MapSegment> RefineSegments(IWorkingBeatmap beatmap, IReadOnlyList<MapSegment> segments, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Finds the segments of every given skillset and rates them (see <see cref="RefineSegments"/>), analysing the map only once.
+        /// Skillsets without a segment are in the result with an empty list.
+        /// </summary>
+        IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindRefinedSegments(IWorkingBeatmap beatmap, IReadOnlyCollection<Skillset> skillsets, int maxSegments,
+                                                                                     CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Creates the mod that restricts gameplay to the given segment.
