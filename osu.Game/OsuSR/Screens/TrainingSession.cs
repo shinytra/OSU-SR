@@ -14,6 +14,7 @@ using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Logging;
+using osu.Framework.Platform;
 using osu.Framework.Screens;
 using osu.Game.Beatmaps;
 using osu.Game.Database;
@@ -72,6 +73,12 @@ namespace osu.Game.OsuSR.Screens
         private readonly List<SegmentResult> results = new List<SegmentResult>();
 
         [Resolved]
+        private Storage storage { get; set; } = null!;
+
+        /// <summary>"Wrongly classified" reports and the purity adjustments they cause.</summary>
+        public SegmentFeedbackStore Feedback { get; private set; } = null!;
+
+        [Resolved]
         private RealmAccess realm { get; set; } = null!;
 
         [Resolved]
@@ -85,6 +92,7 @@ namespace osu.Game.OsuSR.Screens
 
         private Container setupPanel = null!;
         private OsuSpriteText titleText = null!;
+        private OsuSpriteText feedbackSummaryText = null!;
         private RoundedButton startButton = null!;
         private OsuSpriteText statusText = null!;
         private OsuSpriteText lastResultText = null!;
@@ -115,6 +123,7 @@ namespace osu.Game.OsuSR.Screens
         private void load(OsuColour colours)
         {
             osuRuleset = rulesets.GetRuleset("osu") ?? throw new InvalidOperationException("The osu! ruleset is not available.");
+            Feedback = new SegmentFeedbackStore(storage);
             finder = finderOverride ?? ((IHasSkillsetSegments)osuRuleset.CreateInstance()).CreateSkillsetSegmentFinder();
 
             InternalChildren = new Drawable[]
@@ -189,6 +198,21 @@ namespace osu.Game.OsuSR.Screens
                                             Current = MaximumStars,
                                             KeyboardStep = 0.1f,
                                         },
+                                        feedbackSummaryText = new OsuSpriteText
+                                        {
+                                            Font = OsuFont.Default.With(size: 14),
+                                            Colour = colours.Yellow,
+                                        },
+                                        new RoundedButton
+                                        {
+                                            RelativeSizeAxes = Axes.X,
+                                            Text = "Réinitialiser les seuils",
+                                            Action = () =>
+                                            {
+                                                Feedback.ResetAdjustments();
+                                                updateFeedbackSummary();
+                                            },
+                                        },
                                         startButton = new RoundedButton
                                         {
                                             RelativeSizeAxes = Axes.X,
@@ -226,6 +250,7 @@ namespace osu.Game.OsuSR.Screens
             foreach (var enabled in SkillsetEnabled.Values)
                 enabled.BindValueChanged(_ => updateSkillsets());
             updateSkillsets();
+            updateFeedbackSummary();
 
             // Keep the range valid whichever slider is moved.
             MinimumStars.BindValueChanged(v =>
@@ -236,6 +261,14 @@ namespace osu.Game.OsuSR.Screens
             {
                 if (MinimumStars.Value > v.NewValue) MinimumStars.Value = v.NewValue;
             });
+        }
+
+        private void updateFeedbackSummary()
+        {
+            var adjustments = Feedback.PurityAdjustments.Where(p => p.Value > 0).ToList();
+
+            feedbackSummaryText.Text = $"Pendant un passage, {SegmentPlayer.MISCLASSIFIED_KEY} = « mal classé » ({Feedback.ReportCount} retour(s))"
+                                       + (adjustments.Count == 0 ? string.Empty : "\nSeuils plus stricts : " + string.Join(", ", adjustments.Select(p => $"{p.Key.GetDescription()} +{p.Value:P0}")));
         }
 
         private void updateSkillsets()
@@ -272,6 +305,7 @@ namespace osu.Game.OsuSR.Screens
                 return;
             }
 
+            updateFeedbackSummary();
             results.Add(player.Result);
             lastResultText.Text = $"Dernier passage : {player.Result.Accuracy:P2}, combo {player.Result.MaxCombo}x, score {player.Result.TotalScore:N0}  ·  {results.Count} passage(s), précision moyenne {results.Average(r => r.Accuracy):P2}";
 
@@ -310,6 +344,7 @@ namespace osu.Game.OsuSR.Screens
             restoreMods();
             countdownText.FadeOut(200);
             setupPanel.FadeIn(200);
+            updateFeedbackSummary();
             statusText.Text = results.Count > 0 ? "Session terminée." : string.Empty;
         }
 
@@ -327,6 +362,7 @@ namespace osu.Game.OsuSR.Screens
             double min = MinimumStars.Value;
             double max = MaximumStars.Value;
             var skillsets = SelectedSkillsets;
+            finder.PurityAdjustments = Feedback.PurityAdjustments;
 
             statusText.Text = "Recherche du prochain passage…";
 
@@ -444,7 +480,7 @@ namespace osu.Game.OsuSR.Screens
             musicController.Play();
             musicController.CurrentTrack.VolumeTo(0).Then().VolumeTo(1, COUNTDOWN_DURATION, Easing.OutQuad);
 
-            var player = new SegmentPlayer(segment);
+            var player = new SegmentPlayer(segment, Feedback);
             bool loaded = false;
             bool countdownDone = false;
 

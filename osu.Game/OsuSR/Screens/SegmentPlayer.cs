@@ -3,11 +3,17 @@
 
 using System;
 using osu.Framework.Allocation;
+using osu.Framework.Extensions;
+using osu.Framework.Graphics;
+using osu.Framework.Input.Events;
 using osu.Framework.Screens;
+using osu.Game.Graphics;
+using osu.Game.Graphics.Sprites;
 using osu.Game.Scoring;
 using osu.Game.Screens.Play;
 using osu.Game.Screens.Play.Leaderboards;
 using osu.Game.Screens.Ranking;
+using osuTK.Input;
 
 namespace osu.Game.OsuSR.Screens
 {
@@ -26,7 +32,14 @@ namespace osu.Game.OsuSR.Screens
         /// </summary>
         public const double EXIT_DELAY = 1000;
 
+        /// <summary>The key that reports the current segment as wrongly classified.</summary>
+        public const Key MISCLASSIFIED_KEY = Key.F7;
+
         public readonly MapSegment Segment;
+
+        private readonly SegmentFeedbackStore? feedback;
+        private OsuSpriteText feedbackText = null!;
+        private bool reported;
 
         // No leaderboard during training.
         [Cached(typeof(IGameplayLeaderboardProvider))]
@@ -40,7 +53,9 @@ namespace osu.Game.OsuSR.Screens
         /// <summary>Current time of the gameplay clock (ms).</summary>
         public double CurrentGameplayTime => GameplayClockContainer.CurrentTime;
 
-        public SegmentPlayer(MapSegment segment)
+        /// <param name="segment">The segment to play.</param>
+        /// <param name="feedback">Where "wrongly classified" reports go. Reports are ignored when null.</param>
+        public SegmentPlayer(MapSegment segment, SegmentFeedbackStore? feedback = null)
             : base(new PlayerConfiguration
             {
                 ShowResults = false,
@@ -49,17 +64,42 @@ namespace osu.Game.OsuSR.Screens
             })
         {
             Segment = segment;
+            this.feedback = feedback;
         }
 
         protected override void LoadComplete()
         {
             base.LoadComplete();
 
+            AddInternal(feedbackText = new OsuSpriteText
+            {
+                Anchor = Anchor.BottomCentre,
+                Origin = Anchor.BottomCentre,
+                Y = -20,
+                Font = OsuFont.Default.With(size: 20),
+                Alpha = 0,
+            });
+
             ScoreProcessor.HasCompleted.BindValueChanged(completed =>
             {
                 if (completed.NewValue)
                     Scheduler.AddDelayed(finish, EXIT_DELAY);
             });
+        }
+
+        protected override bool OnKeyDown(KeyDownEvent e)
+        {
+            if (e.Key == MISCLASSIFIED_KEY && !e.Repeat && feedback != null && !reported)
+            {
+                reported = true;
+                double adjustment = feedback.ReportMisclassified(Segment, Beatmap.Value.BeatmapInfo);
+
+                feedbackText.Text = $"Noté « mal classé » ({Segment.Skillset.GetDescription()} sera plus strict : +{adjustment:P0})";
+                feedbackText.FadeIn(100).Then().Delay(2500).FadeOut(500);
+                return true;
+            }
+
+            return base.OnKeyDown(e);
         }
 
         protected override void StartGameplay()
