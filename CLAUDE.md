@@ -9,7 +9,7 @@ Scope for now: **osu!standard only**, using the player's **locally installed bea
 ## Plan
 
 1. Minimal lazer base: only "pick a map, play it, see results". (done in the first PR)
-2. Skillset segment detection: `osu.Game.Rulesets.Osu/OsuSR/PatternClassifier.cs` labels every note (jump, flow, burst, stream, spaced stream, fast slider, low/high AR…) from rhythm in beats, distance in radii and angles; `SkillsetSegmentFinder.cs` scores windows as (difficulty of matching notes per second, from the lazer evaluator that fits the skillset) × purity, skips windows that aren't pure enough, and snaps edges to bar lines. 11 skillsets in `osu.Game/OsuSR/Skillset.cs`.
+2. Skillset segment detection: `osu.Game.Rulesets.Osu/OsuSR/PatternClassifier.cs` labels every note (jump, flow, burst, stream, spaced stream, fast slider, low/high AR…) from rhythm in beats, distance in radii and angles; `SkillsetSegmentFinder.cs` scores windows as (difficulty of matching notes per second, from the lazer evaluator that fits the skillset) × purity, skips windows that aren't pure enough, and snaps edges to bar lines. 15 skillsets in `osu.Game/OsuSR/Skillset.cs` (11 single, Reading for overlaps, and 3 mixed ones that need both of their parts).
 3. Play a segment: `osu.Game/OsuSR/Screens/SegmentPlayer.cs` + `OsuModSegment` (system mod that drops objects outside the segment).
 4. Continuous session: `osu.Game/OsuSR/Screens/TrainingSession.cs` (one "training" button in the main menu, skillset checkboxes: several = segments alternate between them, star range min/max, 3 s countdown with music fade-in). Ideas next: tune pattern thresholds on real maps, BPM matching between segments, session summary.
 

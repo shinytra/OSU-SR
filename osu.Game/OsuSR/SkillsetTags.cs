@@ -30,9 +30,13 @@ namespace osu.Game.OsuSR
             Skillset.FingerControl => new[] { "finger control" },
             Skillset.Tech => new[] { "tech" },
             Skillset.Sliders => new[] { "slider" },
-            Skillset.LowAr => new[] { "low ar", "reading" },
+            Skillset.LowAr => new[] { "low ar" },
             Skillset.HighAr => new[] { "high ar" },
             Skillset.Stamina => new[] { "stamina", "deathstream" },
+            Skillset.Reading => new[] { "reading", "overlap" },
+            Skillset.JumpsStreams => KeywordsFor(Skillset.Jumps).Concat(KeywordsFor(Skillset.Streams)).ToArray(),
+            Skillset.FlowStreams => KeywordsFor(Skillset.FlowAim).Concat(KeywordsFor(Skillset.Streams)).ToArray(),
+            Skillset.TechSliders => KeywordsFor(Skillset.Tech).Concat(KeywordsFor(Skillset.Sliders)).ToArray(),
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
         };
 

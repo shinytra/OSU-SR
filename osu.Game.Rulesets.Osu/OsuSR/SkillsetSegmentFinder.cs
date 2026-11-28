@@ -74,6 +74,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             Skillset.LowAr => 0.7,
             Skillset.HighAr => 0.8,
             Skillset.Stamina => 0.6,
+            Skillset.Reading => 0.3,
+            Skillset.JumpsStreams => 0.7,
+            Skillset.FlowStreams => 0.7,
+            Skillset.TechSliders => 0.5,
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
         };
 
@@ -91,7 +95,25 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             Skillset.LowAr => NotePattern.LowAr,
             Skillset.HighAr => NotePattern.HighAr,
             Skillset.Stamina => NotePattern.Deathstream,
+            Skillset.Reading => NotePattern.Overlap,
+            Skillset.JumpsStreams => NotePattern.Jump | NotePattern.Stream,
+            Skillset.FlowStreams => NotePattern.FlowAim | NotePattern.Stream,
+            Skillset.TechSliders => NotePattern.Tech | NotePattern.FastSlider,
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
+        };
+
+        /// <summary>Minimum share of a mixed segment's notes that each of its two parts must have, so a mixed segment really has both.</summary>
+        public const double MINIMUM_COMPONENT_PURITY = 0.3;
+
+        /// <summary>
+        /// The two skillsets that a mixed skillset combines, or null for a regular skillset.
+        /// </summary>
+        public static (Skillset First, Skillset Second)? ComponentsOf(Skillset skillset) => skillset switch
+        {
+            Skillset.JumpsStreams => (Skillset.Jumps, Skillset.Streams),
+            Skillset.FlowStreams => (Skillset.FlowAim, Skillset.Streams),
+            Skillset.TechSliders => (Skillset.Tech, Skillset.Sliders),
+            _ => null,
         };
 
         IReadOnlyList<MapSegment> ISkillsetSegmentFinder.FindSegments(IWorkingBeatmap beatmap, Skillset skillset, int maxSegments, CancellationToken cancellationToken)
@@ -150,6 +172,9 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
             var sums = Enum.GetValues<Skillset>().ToDictionary(s => s, s => new SkillsetSums(profile, s));
             var own = sums[skillset];
+            var components = ComponentsOf(skillset);
+            var partA = components is { } pair ? sums[pair.First] : null;
+            var partB = components is { } other ? sums[other.Second] : null;
             double minimumPurity = MinimumPurity ?? Math.Min(MAXIMUM_PURITY, DefaultMinimumPurity(skillset) + PurityAdjustments.GetValueOrDefault(skillset));
             var lengths = skillset == Skillset.Stamina ? StaminaSegmentLengths : SegmentLengths;
 
@@ -167,6 +192,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                         last++;
 
                     if (own.Matching(first, last) < MinimumMatchingObjects || own.Purity(first, last) < minimumPurity)
+                        continue;
+
+                    // A mixed segment needs a real share of both of its parts.
+                    if (partA != null && partB != null && (partA.Purity(first, last) < MINIMUM_COMPONENT_PURITY || partB.Purity(first, last) < MINIMUM_COMPONENT_PURITY))
                         continue;
 
                     // Slightly favour longer windows, so a long pure part isn't cut into its densest 10 seconds.
@@ -314,6 +343,8 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                 return skills.Append(recorder).ToArray();
             }
 
+            private static IReadOnlyList<double> average(IReadOnlyList<double> a, IReadOnlyList<double> b) => a.Select((v, i) => (v + b[i]) / 2).ToArray();
+
             public SkillsetProfile CreateProfile()
             {
                 var objects = recorder.Objects;
@@ -344,6 +375,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                     [Skillset.LowAr] = reading,
                     [Skillset.HighAr] = aim.Select((a, i) => a + speed[i]).ToArray(),
                     [Skillset.Stamina] = speed,
+                    [Skillset.Reading] = reading,
+                    [Skillset.JumpsStreams] = average(recorder.Snap, speed),
+                    [Skillset.FlowStreams] = average(recorder.Flow, speed),
+                    [Skillset.TechSliders] = average(aim.Select((a, i) => a * recorder.Rhythm[i]).ToArray(), aim.Select((a, i) => Math.Max(0, a - aimNoSliders[i])).ToArray()),
                 }, notes, playableBeatmap);
             }
         }

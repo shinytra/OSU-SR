@@ -54,6 +54,12 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         /// <summary>High approach rate (objects appear late).</summary>
         HighAr = 1 << 11,
+
+        /// <summary>
+        /// Visible together with objects that sit on or next to it but come a beat or more later (stacks, pile-ups, back-and-forth).
+        /// Telling which circle is which is the reading difficulty, whatever the approach rate.
+        /// </summary>
+        Overlap = 1 << 12,
     }
 
     /// <summary>
@@ -64,8 +70,9 @@ namespace osu.Game.Rulesets.Osu.OsuSR
     /// <param name="AngleDegrees">Angle at the previous note between the incoming and outgoing moves. 180 = straight line, 0 = back and forth.</param>
     /// <param name="ChainLength">Number of notes in the tight (≤ 1/3 beat) chain this note belongs to, or 0.</param>
     /// <param name="VisibleObjects">Objects on screen when this note has to be hit.</param>
+    /// <param name="OverlapCount">Visible objects close to this note that come at least a beat after it.</param>
     /// <param name="Pattern">What this note is.</param>
-    public readonly record struct NoteFeatures(double BeatFraction, double DistanceRadii, double? AngleDegrees, int ChainLength, int VisibleObjects, NotePattern Pattern);
+    public readonly record struct NoteFeatures(double BeatFraction, double DistanceRadii, double? AngleDegrees, int ChainLength, int VisibleObjects, int OverlapCount, NotePattern Pattern);
 
     /// <summary>
     /// Labels every note of a map with the <see cref="NotePattern"/>s it belongs to, using simple rules on rhythm (in beats), distance (in radii) and angles.
@@ -107,6 +114,15 @@ namespace osu.Game.Rulesets.Osu.OsuSR
 
         /// <summary>Objects on screen needed for a low AR note to count as a reading challenge.</summary>
         public const int LOW_AR_MIN_VISIBLE = 4;
+
+        /// <summary>Visible objects within this many radii of a note, and a beat or more later, overlap it.</summary>
+        public const double OVERLAP_DISTANCE = 2.5;
+
+        /// <summary>An overlapping object comes at least this fraction of a beat after the note (a bit under a full beat, for rounding).</summary>
+        public const double OVERLAP_MIN_BEAT_FRACTION = 0.95;
+
+        /// <summary>Overlapping objects needed for a note to count as <see cref="NotePattern.Overlap"/>.</summary>
+        public const int OVERLAP_MIN_COUNT = 2;
 
         /// <summary>Notes further apart than this (ms) don't form any pattern together.</summary>
         private const double max_active_delta = 2000;
@@ -186,6 +202,20 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                     visibleEnd++;
                 int visible = visibleEnd - i + 1;
 
+                int overlaps = 0;
+
+                if (beatLength > 0)
+                {
+                    for (int j = i + 1; j <= visibleEnd; j++)
+                    {
+                        if (bases[j].StartTime - current.StartTime >= beatLength * OVERLAP_MIN_BEAT_FRACTION && (bases[j].StackedPosition - current.StackedPosition).Length <= OVERLAP_DISTANCE * current.Radius)
+                            overlaps++;
+                    }
+                }
+
+                if (overlaps >= OVERLAP_MIN_COUNT)
+                    pattern |= NotePattern.Overlap;
+
                 if (chain >= 2)
                 {
                     if (chain < STREAM_LENGTH)
@@ -255,7 +285,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                         pattern |= NotePattern.Tech;
                 }
 
-                result[i] = new NoteFeatures(beatFraction[i], distance[i], angle[i], chain, visible, pattern);
+                result[i] = new NoteFeatures(beatFraction[i], distance[i], angle[i], chain, visible, overlaps, pattern);
             }
 
             return result;

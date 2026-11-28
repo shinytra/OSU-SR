@@ -239,6 +239,57 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         }
 
         [Test]
+        public void TestStackedNotesOverlap()
+        {
+            var notes = finder.Analyse(createBeatmap(stackedNotes(0, 60))).Notes;
+
+            Assert.That(notes.Skip(2).Take(40).All(n => n.Pattern.HasFlag(NotePattern.Overlap) && n.OverlapCount >= PatternClassifier.OVERLAP_MIN_COUNT));
+
+            // Square jumps are far apart: nothing overlaps.
+            var jumps = finder.Analyse(createBeatmap(squareJumps(0, 60))).Notes;
+            Assert.That(jumps.Any(n => n.Pattern.HasFlag(NotePattern.Overlap)), Is.False);
+            Assert.That(jumps.All(n => n.OverlapCount == 0));
+        }
+
+        [Test]
+        public void TestReadingFindsOverlapsAndNotJumps()
+        {
+            var overlaps = finder.Analyse(createBeatmap(stackedNotes(0, 300)));
+            var segment = finder.FindSegments(overlaps, Skillset.Reading, maxSegments: 1).Single();
+
+            Assert.That(segment.Purity, Is.GreaterThan(0.9));
+
+            var jumps = finder.Analyse(createBeatmap(squareJumps(0, 300)));
+            Assert.That(finder.FindSegments(jumps, Skillset.Reading), Is.Empty);
+        }
+
+        [TestCase(Skillset.JumpsStreams, Skillset.Jumps, Skillset.Streams)]
+        public void TestMixedSegmentNeedsBothParts(Skillset mixed, Skillset a, Skillset b)
+        {
+            Assert.That(SkillsetSegmentFinder.ComponentsOf(mixed), Is.EqualTo((a, b)));
+
+            // 4 s of square jumps, then 4 s of stream, four times over.
+            var objects = new List<HitObject>();
+
+            for (int i = 0; i < 4; i++)
+            {
+                objects.AddRange(squareJumps(i * 8000, 24));
+                objects.AddRange(stream(i * 8000 + 4000, 48, spacing: 30));
+            }
+
+            var profile = finder.Analyse(createBeatmap(objects));
+            var segment = finder.FindSegments(profile, mixed, maxSegments: 1).Single();
+
+            TestContext.Out.WriteLine(segment);
+
+            Assert.That(segment.Purity, Is.GreaterThan(0.7));
+
+            // Only one of the two parts is not mixed.
+            Assert.That(finder.FindSegments(finder.Analyse(createBeatmap(squareJumps(0, 300))), mixed), Is.Empty);
+            Assert.That(finder.FindSegments(finder.Analyse(createBeatmap(stream(0, 600, spacing: 30))), mixed), Is.Empty);
+        }
+
+        [Test]
         public void TestNoSegmentWithoutMatchingPatterns()
         {
             var profile = finder.Analyse(createBeatmap(squareJumps(0, 80)));
@@ -296,6 +347,15 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
 
             for (int i = 0; i < count; i++)
                 yield return circle(startTime + i * beat / 2, corners[i % 4]);
+        }
+
+        /// <summary>Notes cycling between three spots that are right next to each other: each one sits under the next ones.</summary>
+        private static IEnumerable<HitObject> stackedNotes(double startTime, int count)
+        {
+            var spots = new[] { new Vector2(240, 192), new Vector2(280, 192), new Vector2(260, 226) };
+
+            for (int i = 0; i < count; i++)
+                yield return circle(startTime + i * beat / 2, spots[i % 3]);
         }
 
         private static HitCircle circle(double time, Vector2 position) => new HitCircle { StartTime = time, Position = position };
