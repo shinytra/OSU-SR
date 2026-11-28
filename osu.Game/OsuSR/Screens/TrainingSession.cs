@@ -24,11 +24,13 @@ using osu.Game.Database;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Sprites;
 using osu.Game.Graphics.UserInterfaceV2;
+using osu.Game.Online.API;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Mods;
 using osu.Game.Overlays.Settings;
 using osu.Game.Rulesets;
 using osu.Game.Rulesets.Mods;
+using osu.Game.Scoring;
 using osu.Game.Screens;
 using osu.Game.Screens.Backgrounds;
 using osuTK;
@@ -68,9 +70,6 @@ namespace osu.Game.OsuSR.Screens
         private const double map_stars_lower_factor = 0.6;
 
         private const double map_stars_upper_factor = 1.8;
-
-        /// <summary>The skillsets picked last, so the next session starts with them.</summary>
-        private static Skillset[] lastSkillsets = { Skillset.Jumps };
 
         /// <summary>
         /// Whether each skillset is part of the session. With several, segments alternate between them.
@@ -128,7 +127,8 @@ namespace osu.Game.OsuSR.Screens
         private SegmentCache baseCache = null!;
         private string weightsSignature = string.Empty;
 
-        private static IReadOnlyList<Mod> lastMods = Array.Empty<Mod>();
+        private SessionSettings settings = new SessionSettings();
+        private readonly IReadOnlyCollection<Skillset>? startingSkillsets;
 
         /// <summary>The mods picked with the standard mod selection (the same one as in the song select). Parts are found and rated with them, and played with them.</summary>
         public readonly Bindable<IReadOnlyList<Mod>> SelectedMods = new Bindable<IReadOnlyList<Mod>>(Array.Empty<Mod>());
@@ -194,10 +194,7 @@ namespace osu.Game.OsuSR.Screens
         /// <param name="finder">Overrides how segments are found (for tests). Defaults to the osu! ruleset's finder.</param>
         public TrainingSession(IEnumerable<Skillset>? skillsets = null, ISkillsetSegmentFinder? finder = null)
         {
-            foreach (var skillset in skillsets ?? lastSkillsets)
-                SkillsetEnabled[skillset].Value = true;
-
-            SelectedMods.Value = lastMods;
+            startingSkillsets = skillsets?.ToArray();
 
             finderOverride = finder;
         }
@@ -216,6 +213,25 @@ namespace osu.Game.OsuSR.Screens
             finder.Weights = weights;
             weightsSignature = weights.Signature;
             baseCache = new SegmentCache(storage);
+            // The setup of the last session (skillsets, range, mods, series options) is restored, and kept whenever something changes.
+            settings = SessionSettings.Load(storage);
+            MinimumStars.Value = settings.MinimumStars;
+            MaximumStars.Value = Math.Max(settings.MinimumStars, settings.MaximumStars);
+            PreferTaggedMaps.Value = settings.PreferTaggedMaps;
+            MatchBpm.Value = settings.MatchBpm;
+            SeriesMode.Value = settings.SeriesMode;
+            InfiniteMode.Value = settings.InfiniteMode;
+            IncludeUnknownStatus.Value = settings.IncludeUnknownStatus;
+            AdaptiveDifficulty.Value = settings.AdaptiveDifficulty;
+            SeriesLength.Value = settings.SeriesLength;
+
+            var restoredSkillsets = startingSkillsets ?? settings.ParsedSkillsets.ToArray();
+
+            foreach (var skillset in restoredSkillsets)
+                SkillsetEnabled[skillset].Value = true;
+
+            var ruleset = osuRuleset.CreateInstance();
+            SelectedMods.Value = settings.Mods.Select(m => m.ToMod(ruleset)).ToArray();
             applyMods();
 
             // The mods are chosen with the same selection screen as in the song select.
@@ -399,6 +415,13 @@ namespace osu.Game.OsuSR.Screens
             InfiniteMode.BindValueChanged(v => seriesLengthSlider.Alpha = v.NewValue ? 0 : 1, true);
             SelectedMods.BindValueChanged(_ => modsChanged(), true);
 
+            MinimumStars.BindValueChanged(_ => saveSettings());
+            MaximumStars.BindValueChanged(_ => saveSettings());
+            SeriesLength.BindValueChanged(_ => saveSettings());
+
+            foreach (var option in new[] { PreferTaggedMaps, MatchBpm, SeriesMode, InfiniteMode, IncludeUnknownStatus, AdaptiveDifficulty })
+                option.BindValueChanged(_ => saveSettings());
+
             foreach (var enabled in SkillsetEnabled.Values)
                 enabled.BindValueChanged(_ => updateSkillsets());
             updateSkillsets();
@@ -423,8 +446,29 @@ namespace osu.Game.OsuSR.Screens
                                        + (adjustments.Count == 0 ? string.Empty : "\nSeuils plus stricts : " + string.Join(", ", adjustments.Select(p => $"{p.Key.GetDescription()} +{p.Value:P0}")));
         }
 
+        private void saveSettings()
+        {
+            if (!IsLoaded)
+                return;
+
+            settings.Skillsets = SelectedSkillsets.Select(s => s.ToString()).ToList();
+            settings.MinimumStars = MinimumStars.Value;
+            settings.MaximumStars = MaximumStars.Value;
+            settings.Mods = SelectedMods.Value.Select(m => new APIMod(m)).ToList();
+            settings.PreferTaggedMaps = PreferTaggedMaps.Value;
+            settings.MatchBpm = MatchBpm.Value;
+            settings.SeriesMode = SeriesMode.Value;
+            settings.InfiniteMode = InfiniteMode.Value;
+            settings.IncludeUnknownStatus = IncludeUnknownStatus.Value;
+            settings.AdaptiveDifficulty = AdaptiveDifficulty.Value;
+            settings.SeriesLength = SeriesLength.Value;
+            settings.Save(storage);
+        }
+
         private void modsChanged()
         {
+            saveSettings();
+
             modsButton.Text = SelectedMods.Value.Count == 0 ? "Mods : aucun (cliquer pour choisir)" : "Mods : " + string.Join(" ", SelectedMods.Value.Select(m => m.Acronym)) + " (cliquer pour changer)";
 
             if (!IsLoaded)
@@ -446,7 +490,6 @@ namespace osu.Game.OsuSR.Screens
         {
             var mods = playedMods;
             finder.Mods = mods;
-            lastMods = SelectedMods.Value;
 
             string signature = string.Join("+", mods.Select(m => m.Acronym + "(" + string.Join(",", m.SettingDescription.Select(d => $"{d.setting}={d.value}")) + ")").OrderBy(a => a, StringComparer.Ordinal));
             segmentCache = baseCache.WithSignature(weightsSignature + "|" + signature);
@@ -456,8 +499,7 @@ namespace osu.Game.OsuSR.Screens
         {
             var selected = SelectedSkillsets;
 
-            if (selected.Length > 0)
-                lastSkillsets = selected;
+            saveSettings();
 
             // Nothing is analysed again here: every skillset is indexed once, picking skillsets only filters what was found.
 
@@ -529,6 +571,7 @@ namespace osu.Game.OsuSR.Screens
         public override bool OnExiting(ScreenExitEvent e)
         {
             modSelect.Hide();
+            Volatile.Write(ref sessionRunning, false);
             saveSegmentCache();
             indexCancellation?.Cancel();
             preparationCancellation?.Cancel();
@@ -548,6 +591,7 @@ namespace osu.Game.OsuSR.Screens
                 return;
 
             running = true;
+            Volatile.Write(ref sessionRunning, true);
             results.Clear();
             startedSkillsets.Clear();
             currentBeatmapId = null;
@@ -567,6 +611,7 @@ namespace osu.Game.OsuSR.Screens
         {
             saveSegmentCache();
             running = false;
+            Volatile.Write(ref sessionRunning, false);
             preparationCancellation?.Cancel();
             restoreMods();
             restoreVolume();
@@ -872,6 +917,10 @@ namespace osu.Game.OsuSR.Screens
         }
 
         /// <summary>The workers of the index: one per core. Speed matters more than the game's frame rate while the library is being analysed (the first time only).</summary>
+        private const int playing_workers = 2;
+
+        private static bool sessionRunning;
+
         private static int indexWorkers => Math.Max(1, Environment.ProcessorCount);
 
         private void runIndexing(SegmentCache cache, bool includeUnknown, double min, double max, CancellationToken token)
@@ -941,10 +990,20 @@ namespace osu.Game.OsuSR.Screens
             var lastSave = Stopwatch.StartNew();
             object saveLock = new object();
 
-            void work()
+            void work(int worker)
             {
-                while (!token.IsCancellationRequested && queue.TryDequeue(out var entry))
+                while (!token.IsCancellationRequested)
                 {
+                    // While parts are being found, loaded and played, most workers wait: loading a map must not compete with the whole library being analysed.
+                    if (worker >= playing_workers && Volatile.Read(ref sessionRunning))
+                    {
+                        Thread.Sleep(200);
+                        continue;
+                    }
+
+                    if (!queue.TryDequeue(out var entry))
+                        break;
+
                     var adjustments = finder.PurityAdjustments;
                     var missing = skillsets.Where(s => !cache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
 
@@ -985,7 +1044,7 @@ namespace osu.Game.OsuSR.Screens
                 }
             }
 
-            var workers = Enumerable.Range(0, indexWorkers).Select(i => new Thread(work) { Name = $"OSU SR library index {i}", IsBackground = true }).ToList();
+            var workers = Enumerable.Range(0, indexWorkers).Select(i => new Thread(() => work(i)) { Name = $"OSU SR library index {i}", IsBackground = true, Priority = ThreadPriority.BelowNormal }).ToList();
             workers.ForEach(w => w.Start());
 
             // Every few seconds: the speed, how busy the cores are, and where the time goes (to find what holds indexing back).
