@@ -878,21 +878,23 @@ namespace osu.Game.OsuSR.Screens
                 var everything = Enum.GetValues<Skillset>();
 
                 // What the session needs first (its skillsets, the maps in its star range), then the rest, so playing is possible as early as possible.
-                var passes = new List<(List<(Guid ID, double Weight, double BPM, string Hash)> Maps, Skillset[] Skillsets)>
+                // Rating the parts (their star ratings and skillsets) is most of the work: it is only done for the skillsets the session asks for,
+                // the others are only detected, and rated when they are picked.
+                var passes = new List<(List<(Guid ID, double Weight, double BPM, string Hash)> Maps, Skillset[] Skillsets, bool Rate)>
                 {
-                    (inRange, wanted),
-                    (inRange, everything),
-                    (outside, wanted),
-                    (outside, everything),
+                    (inRange, wanted, true),
+                    (inRange, everything, false),
+                    (outside, wanted, true),
+                    (outside, everything, false),
                 };
 
                 var clock = Stopwatch.StartNew();
                 int indexed = 0;
 
-                foreach (var (maps, skillsets) in passes)
+                foreach (var (maps, skillsets, rate) in passes)
                 {
                     token.ThrowIfCancellationRequested();
-                    indexed += runPass(cache, maps, skillsets, indexed, passes.Sum(p => p.Maps.Count), token);
+                    indexed += runPass(cache, maps, skillsets, rate, indexed, passes.Sum(p => p.Maps.Count), token);
                 }
 
                 cache.Save();
@@ -909,7 +911,7 @@ namespace osu.Game.OsuSR.Screens
         }
 
         /// <summary>Analyses the given maps for the given skillsets on all the cores. Returns how many maps were gone through.</summary>
-        private int runPass(SegmentCache cache, List<(Guid ID, double Weight, double BPM, string Hash)> maps, Skillset[] skillsets, int before, int grandTotal, CancellationToken token)
+        private int runPass(SegmentCache cache, List<(Guid ID, double Weight, double BPM, string Hash)> maps, Skillset[] skillsets, bool rate, int before, int grandTotal, CancellationToken token)
         {
             var queue = new ConcurrentQueue<(Guid ID, double Weight, double BPM, string Hash)>(maps);
             int done = 0;
@@ -923,7 +925,7 @@ namespace osu.Game.OsuSR.Screens
                     var adjustments = finder.PurityAdjustments;
                     var missing = skillsets.Where(s => !cache.TryGet(entry.Hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
 
-                    if (missing.Length > 0 || needsStars(cache, entry.Hash, skillsets, adjustments))
+                    if (missing.Length > 0 || (rate && needsStars(cache, entry.Hash, skillsets, adjustments)))
                     {
                         try
                         {
@@ -932,7 +934,7 @@ namespace osu.Game.OsuSR.Screens
                             Interlocked.Add(ref realmTicks, Stopwatch.GetTimestamp() - realmStart);
 
                             if (info != null)
-                                indexMap(cache, info, skillsets, missing, adjustments, token);
+                                indexMap(cache, info, skillsets, missing, rate, adjustments, token);
                         }
                         catch (OperationCanceledException)
                         {
@@ -996,7 +998,7 @@ namespace osu.Game.OsuSR.Screens
         private static bool needsStars(SegmentCache cache, string hash, Skillset[] all, IReadOnlyDictionary<Skillset, double> adjustments)
             => all.Any(s => cache.TryGet(hash, s, adjustments.GetValueOrDefault(s), out var segments) && segments.Any(x => x.StarRating == null));
 
-        private void indexMap(SegmentCache cache, BeatmapInfo info, Skillset[] all, Skillset[] missing, IReadOnlyDictionary<Skillset, double> adjustments, CancellationToken token)
+        private void indexMap(SegmentCache cache, BeatmapInfo info, Skillset[] all, Skillset[] missing, bool rate, IReadOnlyDictionary<Skillset, double> adjustments, CancellationToken token)
         {
             long loadStart = Stopwatch.GetTimestamp();
             var working = beatmaps.GetWorkingBeatmap(info);
@@ -1008,7 +1010,9 @@ namespace osu.Game.OsuSR.Screens
             if (missing.Length > 0)
             {
                 // Analysed and rated in one go: one analysis of the map for all of its parts.
-                var found = finder.FindRefinedSegments(working, missing, 3, token);
+                var found = rate
+                    ? finder.FindRefinedSegments(working, missing, 3, token)
+                    : finder.FindSegments(working, missing, 3, token);
 
                 // Cancelled while analysing (other mods now): these results would be for the wrong ones.
                 token.ThrowIfCancellationRequested();
@@ -1016,6 +1020,9 @@ namespace osu.Game.OsuSR.Screens
                 foreach (var skillset in missing)
                     cache.Set(info.MD5Hash, skillset, adjustments.GetValueOrDefault(skillset), found.TryGetValue(skillset, out var s) ? s : Array.Empty<MapSegment>());
             }
+
+            if (!rate)
+                return;
 
             // Rate everything that isn't yet in one go: the map is analysed once for all of its parts.
             var pending = all.Select(s => (Skillset: s, Segments: cache.TryGet(info.MD5Hash, s, adjustments.GetValueOrDefault(s), out var found) ? found : Array.Empty<MapSegment>()))
