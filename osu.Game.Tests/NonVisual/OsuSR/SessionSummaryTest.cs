@@ -37,7 +37,7 @@ namespace osu.Game.Tests.NonVisual.OsuSR
 
             Assert.That(lines, Has.Count.EqualTo(4));
             Assert.That(lines[3], Does.StartWith("À retravailler"));
-            Assert.That(lines[3], Does.Contain(Skillset.Streams.ToString()).Or.Contain("tream"));
+            Assert.That(lines[3], Does.Contain(nameof(Skillset.Streams)).Or.Contain("tream"));
         }
     }
 }
