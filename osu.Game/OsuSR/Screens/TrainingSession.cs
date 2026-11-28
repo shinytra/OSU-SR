@@ -91,6 +91,12 @@ namespace osu.Game.OsuSR.Screens
         /// <summary>Series mode that never ends (until the player leaves): the next segments are found and loaded in the background while playing.</summary>
         public readonly BindableBool InfiniteMode = new BindableBool();
 
+        /// <summary>
+        /// Also plays maps whose online status is unknown (none). Maps imported without an online lookup have no status even if they are ranked,
+        /// so with a library like that the ranked/loved filter would find nothing.
+        /// </summary>
+        public readonly BindableBool IncludeUnknownStatus = new BindableBool();
+
         /// <summary>In a series: makes the next parts easier when the player struggles and harder when they play them very well.</summary>
         public readonly BindableBool AdaptiveDifficulty = new BindableBool();
 
@@ -264,6 +270,11 @@ namespace osu.Game.OsuSR.Screens
                                         {
                                             LabelText = "Série infinie (jusqu'à ce que tu quittes)",
                                             Current = InfiniteMode,
+                                        },
+                                        new SettingsCheckbox
+                                        {
+                                            LabelText = "Inclure les maps sans statut en ligne (si tes maps ne sont pas reconnues ranked/loved)",
+                                            Current = IncludeUnknownStatus,
                                         },
                                         new SettingsCheckbox
                                         {
@@ -487,7 +498,7 @@ namespace osu.Game.OsuSR.Screens
 
             var recentMaps = excluded is Guid id ? new[] { id } : Array.Empty<Guid>();
 
-            return Task.Run(() => findNextSegment(loadPool(skillsets, min, max, preferTagged), skillsets, min, max, previousBpm, recentMaps, recent, cancellationToken), cancellationToken);
+            return Task.Run(() => findNextSegment(loadPool(skillsets, min, max, preferTagged, IncludeUnknownStatus.Value), skillsets, min, max, previousBpm, recentMaps, recent, cancellationToken), cancellationToken);
         }
 
         private void handleSearchResult(Task<(WorkingBeatmap Beatmap, MapSegment Segment)?> search, CancellationTokenSource cancellation)
@@ -505,7 +516,7 @@ namespace osu.Game.OsuSR.Screens
 
             if (search.GetResultSafely() == null)
             {
-                statusText.Text = $"Aucun passage {string.Join(" / ", SelectedSkillsets.Select(s => s.GetDescription()))} trouvé dans les maps entre {MinimumStars.Value:N1} et {MaximumStars.Value:N1} étoiles.";
+                statusText.Text = describeEmptyPool();
                 stopSession();
                 return;
             }
@@ -515,19 +526,50 @@ namespace osu.Game.OsuSR.Screens
         }
 
         /// <summary>The maps a session may pick from: ranked, approved or loved osu! maps whose star rating can have a segment in range.</summary>
-        private List<(Guid ID, double Weight, double BPM)> loadPool(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged)
+        private List<(Guid ID, double Weight, double BPM)> loadPool(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, bool includeUnknown)
         {
-            return realm.Run(r => r.All<BeatmapInfo>()
-                                   .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
-                                           + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
-                                           + $" AND ({nameof(BeatmapInfo.Status)} == $3 OR {nameof(BeatmapInfo.Status)} == $4 OR {nameof(BeatmapInfo.Status)} == $5)"
-                                           + $" AND {nameof(BeatmapInfo.Hidden)} == false"
-                                           + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
-                                       osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor,
-                                       (int)BeatmapOnlineStatus.Ranked, (int)BeatmapOnlineStatus.Approved, (int)BeatmapOnlineStatus.Loved)
-                                   .AsEnumerable()
-                                   .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM))
-                                   .ToList());
+            string statuses = $"{nameof(BeatmapInfo.Status)} == $3 OR {nameof(BeatmapInfo.Status)} == $4 OR {nameof(BeatmapInfo.Status)} == $5"
+                              + (includeUnknown ? $" OR {nameof(BeatmapInfo.Status)} == $6" : string.Empty);
+
+            var pool = realm.Run(r => r.All<BeatmapInfo>()
+                                       .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
+                                               + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
+                                               + $" AND ({statuses})"
+                                               + $" AND {nameof(BeatmapInfo.Hidden)} == false"
+                                               + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
+                                           osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor,
+                                           (int)BeatmapOnlineStatus.Ranked, (int)BeatmapOnlineStatus.Approved, (int)BeatmapOnlineStatus.Loved, (int)BeatmapOnlineStatus.None)
+                                       .AsEnumerable()
+                                       .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM))
+                                       .ToList());
+
+            Logger.Log($"OSU SR: {pool.Count} candidate maps for {minStars:N1}-{maxStars:N1}★ (unknown status {(includeUnknown ? "included" : "excluded")})");
+            return pool;
+        }
+
+        /// <summary>Why no map can be used, in words: how many osu! maps are in range, and how many of them have no online status.</summary>
+        private string describeEmptyPool()
+        {
+            double min = MinimumStars.Value * map_stars_lower_factor;
+            double max = MaximumStars.Value * map_stars_upper_factor;
+
+            var (inRange, unknown) = realm.Run(r =>
+            {
+                var all = r.All<BeatmapInfo>()
+                           .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
+                                   + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
+                                   + $" AND {nameof(BeatmapInfo.Hidden)} == false",
+                               osuRuleset.ShortName, min, max);
+
+                return (all.Count(), all.Filter($"{nameof(BeatmapInfo.Status)} == $0", (int)BeatmapOnlineStatus.None).Count());
+            });
+
+            string skillsets = string.Join(" / ", SelectedSkillsets.Select(s => s.GetDescription()));
+
+            if (inRange > 0 && !IncludeUnknownStatus.Value)
+                return $"Aucun passage {skillsets} trouvé : {inRange} maps dans {MinimumStars.Value:N1}-{MaximumStars.Value:N1}★, dont {unknown} sans statut en ligne. Coche « Inclure les maps sans statut » pour les jouer.";
+
+            return $"Aucun passage {skillsets} trouvé dans les maps entre {MinimumStars.Value:N1} et {MaximumStars.Value:N1} étoiles ({inRange} maps dans cette plage).";
         }
 
         // candidates: the maps to pick from (see loadPool). recentMaps: maps played lately, which are skipped as long as there are others.
@@ -723,6 +765,7 @@ namespace osu.Game.OsuSR.Screens
             var seriesFinder = finder;
             SeriesFeed? seriesFeed = null;
             bool adaptive = AdaptiveDifficulty.Value;
+            bool includeUnknown = IncludeUnknownStatus.Value;
 
             // The candidates are looked up once for the whole series, not for each part.
             List<(Guid ID, double Weight, double BPM)>? pool = null;
@@ -731,7 +774,7 @@ namespace osu.Game.OsuSR.Screens
             {
                 // With adaptive difficulty the candidates cover the range the offset can reach.
                 double reach = adaptive ? SeriesFeed.MAXIMUM_STAR_OFFSET : 0;
-                pool ??= loadPool(skillsets, Math.Max(0, min - reach), max + reach, preferTagged);
+                pool ??= loadPool(skillsets, Math.Max(0, min - reach), max + reach, preferTagged, includeUnknown);
 
                 double offset = adaptive ? seriesFeed?.StarOffset ?? 0 : 0;
                 var found = findNextSegment(pool, skillsets, Math.Max(0, min + offset), max + offset, matchBpm ? bpm : null, recentMaps, played.ToArray(), token);
@@ -773,7 +816,7 @@ namespace osu.Game.OsuSR.Screens
             if (feed.NothingFound)
             {
                 feed.Dispose();
-                statusText.Text = $"Aucun passage {string.Join(" / ", SelectedSkillsets.Select(s => s.GetDescription()))} trouvé dans les maps ranked/loved entre {MinimumStars.Value:N1} et {MaximumStars.Value:N1} étoiles.";
+                statusText.Text = describeEmptyPool();
                 stopSession();
                 return;
             }
