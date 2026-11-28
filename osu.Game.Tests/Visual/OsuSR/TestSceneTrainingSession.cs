@@ -47,8 +47,15 @@ namespace osu.Game.Tests.Visual.OsuSR
             SegmentPlayer player = null!;
 
             AddUntilStep("wait for segment player", () => (player = (Game.ScreenStack.CurrentScreen as SegmentPlayer)!) != null);
-            AddStep("report as wrongly classified", () => InputManager.Key(SegmentPlayer.MISCLASSIFIED_KEY));
-            AddAssert("report saved, skillset stricter", () => session.Feedback.PurityAdjustments[Skillset.Jumps], () => Is.EqualTo(SegmentFeedbackStore.ADJUSTMENT_STEP));
+            // The player may not have input focus yet, so press again until the report goes through (one report per segment).
+            AddUntilStep("report as wrongly classified", () =>
+            {
+                if (!session.Feedback.PurityAdjustments.ContainsKey(Skillset.Jumps))
+                    InputManager.Key(SegmentPlayer.MISCLASSIFIED_KEY);
+
+                return session.Feedback.PurityAdjustments.ContainsKey(Skillset.Jumps);
+            });
+            AddAssert("skillset stricter by one step", () => session.Feedback.PurityAdjustments[Skillset.Jumps], () => Is.EqualTo(SegmentFeedbackStore.ADJUSTMENT_STEP));
             AddAssert("segment and no fail mods applied", () => player.Mods.Value.OfType<OsuModSegment>().Any() && player.Mods.Value.OfType<ModNoFail>().Any());
             AddUntilStep("gameplay starts at segment", () => player.CurrentGameplayTime, () => Is.GreaterThanOrEqualTo(player.Segment.StartTime - 50));
             AddAssert("only segment objects loaded", () => player.Beatmap.Value.GetPlayableBeatmap(player.Ruleset.Value, player.Mods.Value).HitObjects
