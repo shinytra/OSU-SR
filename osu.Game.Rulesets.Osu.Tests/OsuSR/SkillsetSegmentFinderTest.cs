@@ -66,7 +66,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
                 Assert.That(segment.StartTime, Is.GreaterThanOrEqualTo(0));
                 Assert.That(segment.StartTime, Is.LessThan(segment.FirstObjectTime).Or.EqualTo(0));
                 Assert.That(segment.EndTime, Is.LessThanOrEqualTo(mapEnd));
-                Assert.That(segment.FirstObjectTime - segment.StartTime, Is.LessThanOrEqualTo(finder.LeadIn));
+                Assert.That(segment.FirstObjectTime - segment.StartTime, Is.LessThanOrEqualTo(finder.LeadIn * 2.5));
                 Assert.That(segment.ObjectCount, Is.GreaterThanOrEqualTo(finder.MinimumMatchingObjects));
                 Assert.That(segment.Purity, Is.GreaterThanOrEqualTo(SkillsetSegmentFinder.DefaultMinimumPurity(skillset)));
             }
@@ -318,6 +318,13 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
 
                 if (segment.EndTime < profile.Objects[^1].GetEndTime())
                     Assert.That(offBar(segment.EndTime), Is.EqualTo(0).Within(1));
+
+                // Playback starts on a bar line too, with a lead-in of at least 1.5 s, so the music is in phase with the notes.
+                if (segment.StartTime > 0)
+                {
+                    Assert.That(offBar(segment.StartTime), Is.EqualTo(0).Within(1));
+                    Assert.That(segment.FirstObjectTime - segment.StartTime, Is.GreaterThanOrEqualTo(finder.LeadIn * 0.75 - 1));
+                }
             }
 
             double offBar(double time) => Math.Abs(time / bar - Math.Round(time / bar)) * bar;

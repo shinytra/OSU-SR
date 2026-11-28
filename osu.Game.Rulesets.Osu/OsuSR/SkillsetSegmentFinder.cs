@@ -233,7 +233,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                 return new MapSegment
                 {
                     Skillset = skillset,
-                    StartTime = Math.Max(0, objects[first].StartTime - LeadIn),
+                    StartTime = Math.Max(0, startTimeFor(profile, objects[first].StartTime)),
                     FirstObjectTime = objects[first].StartTime,
                     EndTime = objects[last].GetEndTime(),
                     ObjectCount = last - first + 1,
@@ -241,6 +241,30 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                     Purity = purity,
                 };
             }
+        }
+
+        /// <summary>
+        /// When playback of a segment starts. With <see cref="SnapToBars"/>, that is a bar line (or half bar, or beat, for slow maps) of the map's own timing,
+        /// at least <see cref="LeadIn"/> × 0.75 before the first object, so the music's pulse starts in phase with the notes. Otherwise it is <see cref="LeadIn"/> before.
+        /// </summary>
+        private double startTimeFor(SkillsetProfile profile, double firstObjectTime)
+        {
+            if (!SnapToBars || profile.Beatmap == null)
+                return firstObjectTime - LeadIn;
+
+            var timingPoint = profile.Beatmap.ControlPointInfo.TimingPointAt(firstObjectTime);
+            double beatLength = timingPoint.BeatLength;
+            double unit = beatLength * timingPoint.TimeSignature.Numerator;
+
+            if (beatLength <= 0)
+                return firstObjectTime - LeadIn;
+
+            // Slow maps have very long bars: use half bars, then beats, to keep the lead-in short.
+            while (unit > LeadIn && unit / 2 >= beatLength * 0.99)
+                unit /= 2;
+
+            double latest = firstObjectTime - LeadIn * 0.75;
+            return timingPoint.Time + Math.Floor((latest - timingPoint.Time) / unit + 1e-6) * unit;
         }
 
         /// <summary>

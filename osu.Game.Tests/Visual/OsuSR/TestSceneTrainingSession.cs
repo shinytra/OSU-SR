@@ -73,6 +73,29 @@ namespace osu.Game.Tests.Visual.OsuSR
         }
 
         [Test]
+        public void TestSeriesStartsWithoutCountdown()
+        {
+            AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
+
+            AddStep("enter jumps session", () => Game.ScreenStack.Push(session = new TrainingSession(new[] { Skillset.Jumps }, finder)));
+            AddUntilStep("wait for session", () => session.IsCurrentScreen());
+
+            AddStep("configure series of 2", () =>
+            {
+                session.MinimumStars.Value = 0;
+                session.MaximumStars.Value = 12;
+                session.SeriesMode.Value = true;
+                session.SeriesLength.Value = 2;
+            });
+            AddStep("start", () => session.StartSession());
+
+            AddUntilStep("segment player shown", () => Game.ScreenStack.CurrentScreen is SegmentPlayer);
+            AddStep("quit segment", () => Game.ScreenStack.CurrentScreen.Exit());
+            AddUntilStep("back at session setup", () => session.IsCurrentScreen());
+            AddStep("exit session", () => session.Exit());
+        }
+
+        [Test]
         public void TestMixedSkillsetsAlternate()
         {
             AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
