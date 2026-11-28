@@ -18,7 +18,7 @@ namespace osu.Game.OsuSR
     public class SegmentCache
     {
         /// <summary>Changes whenever the detection changes, which makes everything saved before it obsolete.</summary>
-        public const int VERSION = 4;
+        public const int VERSION = 5;
 
         private const string directory = "osu-sr";
         private const string cache_file = "segment-cache.json";

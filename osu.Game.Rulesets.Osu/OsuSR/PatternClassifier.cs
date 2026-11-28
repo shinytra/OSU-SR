@@ -28,10 +28,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         /// <summary>Part of a chain of 2 to 8 tightly snapped notes.</summary>
         Burst = 1 << 2,
 
-        /// <summary>Part of a chain of 9+ tightly snapped notes.</summary>
+        /// <summary>Part of a chain of 9+ tightly snapped notes that mostly stay close together (never together with <see cref="SpacedStream"/>).</summary>
         Stream = 1 << 3,
 
-        /// <summary>Part of a stream where at least half the steps are 2+ radii.</summary>
+        /// <summary>Part of a chain of 9+ tightly snapped notes where at least half the steps are 2+ radii (instead of <see cref="Stream"/>, never both).</summary>
         SpacedStream = 1 << 4,
 
         /// <summary>Part of a stream of <see cref="PatternClassifier.DEATHSTREAM_LENGTH"/>+ notes.</summary>
@@ -213,7 +213,8 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                     }
                 }
 
-                if (overlaps >= OVERLAP_MIN_COUNT)
+                // A stream sits on top of its own notes all the time: that is not a reading challenge, so streams never count as overlaps.
+                if (overlaps >= OVERLAP_MIN_COUNT && chain < STREAM_LENGTH)
                     pattern |= NotePattern.Overlap;
 
                 if (chain >= 2)
@@ -222,10 +223,8 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                         pattern |= NotePattern.Burst | NotePattern.Alt;
                     else
                     {
-                        pattern |= NotePattern.Stream;
-
-                        if (chainSpacedFraction[i] >= 0.5)
-                            pattern |= NotePattern.SpacedStream;
+                        // Close notes are a stream, wide ones a spaced stream: never both, so each can be played alone.
+                        pattern |= chainSpacedFraction[i] >= 0.5 ? NotePattern.SpacedStream : NotePattern.Stream;
 
                         if (chain >= DEATHSTREAM_LENGTH)
                             pattern |= NotePattern.Deathstream;

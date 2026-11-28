@@ -134,6 +134,18 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         }
 
         [Test]
+        public void TestStreamAndSpacedStreamNeverOverlap()
+        {
+            foreach (float spacing in new[] { 30f, 55f, 90f, 150f })
+            {
+                var notes = finder.Analyse(createBeatmap(stream(0, 40, spacing))).Notes;
+
+                Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Stream) && n.Pattern.HasFlag(NotePattern.SpacedStream)), Is.False, $"spacing {spacing}");
+                Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Stream) || n.Pattern.HasFlag(NotePattern.SpacedStream)), Is.True, $"spacing {spacing}");
+            }
+        }
+
+        [Test]
         public void TestShortChainsAreBursts()
         {
             var objects = new List<HitObject>();
@@ -338,7 +350,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
 
             var objects = squareJumps(0, 10)
                           .Concat(squareJumps(20_000, 16))
-                          .Concat(stream(hardStart, 40, 150))
+                          .Concat(stream(hardStart, 40, 55))
                           .Concat(squareJumps(hardStart + 40 * beat / 4, 60))
                           .ToList();
 
@@ -374,7 +386,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             double hardEnd = hardStart + 39 * beat / 4;
 
             var objects = squareJumps(20_000, 16)
-                          .Concat(stream(hardStart, 40, 150))
+                          .Concat(stream(hardStart, 40, 55))
                           .Concat(squareJumps(hardStart + 40 * beat / 4, 60))
                           .ToList();
 
@@ -402,7 +414,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         public void TestSegmentsListEverySkillsetThatIsARealPartOfThem()
         {
             // Jumps with a stream in the middle: both are a real part (a quarter of the notes or more).
-            var objects = squareJumps(0, 24).Concat(stream(24 * beat / 2, 24, 150)).ToList();
+            var objects = squareJumps(0, 24).Concat(stream(24 * beat / 2, 24, 55)).ToList();
             var segments = new SkillsetSegmentFinder { MinimumPurity = 0.4 }.FindSegments(createBeatmap(objects), Skillset.Jumps, 3);
 
             Assert.That(segments, Is.Not.Empty);
@@ -442,7 +454,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         [Test]
         public void TestRefiningRatesTheNotesOfEachSkillsetAndAppliesTheWeights()
         {
-            var beatmap = createBeatmap(squareJumps(0, 24).Concat(stream(24 * beat / 2, 24, 150)).ToList());
+            var beatmap = createBeatmap(squareJumps(0, 24).Concat(stream(24 * beat / 2, 24, 55)).ToList());
             var plain = new SkillsetSegmentFinder { MinimumPurity = 0.4 };
             var segments = plain.FindSegments(beatmap, Skillset.Jumps, 1);
             Assert.That(segments, Is.Not.Empty);
@@ -463,7 +475,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         public void TestSeriesBeatmapPutsPartsOneAfterTheOther()
         {
             var first = createBeatmap(squareJumps(0, 40));
-            var second = createBeatmap(stream(1000, 40, 150), approachRate: 7);
+            var second = createBeatmap(stream(1000, 40, 55), approachRate: 7);
 
             var parts = new[]
             {
