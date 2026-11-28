@@ -67,9 +67,6 @@ namespace osu.Game.OsuSR.Screens
         public readonly BindableDouble MinimumStars = new BindableDouble(4) { MinValue = 0, MaxValue = 12, Precision = 0.1 };
         public readonly BindableDouble MaximumStars = new BindableDouble(6) { MinValue = 0, MaxValue = 12, Precision = 0.1 };
 
-        /// <summary>Whether maps that the community tagged for the selected skillsets are picked more often (from the local metadata cache, no network).</summary>
-        public readonly BindableBool PreferTaggedMaps = new BindableBool(true);
-
         /// <summary>Results of the segments played in this session, oldest first.</summary>
         public IReadOnlyList<SegmentResult> Results => results;
 
@@ -200,11 +197,6 @@ namespace osu.Game.OsuSR.Screens
                                             LabelText = "Étoiles maximum (du passage)",
                                             Current = MaximumStars,
                                             KeyboardStep = 0.1f,
-                                        },
-                                        new SettingsCheckbox
-                                        {
-                                            LabelText = "Préférer les maps taguées par la communauté",
-                                            Current = PreferTaggedMaps,
                                         },
                                         feedbackSummaryText = new OsuSpriteText
                                         {
@@ -370,12 +362,11 @@ namespace osu.Game.OsuSR.Screens
             double min = MinimumStars.Value;
             double max = MaximumStars.Value;
             var skillsets = SelectedSkillsets;
-            bool preferTagged = PreferTaggedMaps.Value;
             finder.PurityAdjustments = Feedback.PurityAdjustments;
 
             statusText.Text = "Recherche du prochain passage…";
 
-            Task.Run(() => findNextSegment(skillsets, min, max, preferTagged, cancellation.Token), cancellation.Token).ContinueWith(t => Schedule(() =>
+            Task.Run(() => findNextSegment(skillsets, min, max, cancellation.Token), cancellation.Token).ContinueWith(t => Schedule(() =>
             {
                 if (cancellation.IsCancellationRequested || !running)
                     return;
@@ -400,7 +391,7 @@ namespace osu.Game.OsuSR.Screens
             }), TaskContinuationOptions.None);
         }
 
-        private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, CancellationToken cancellationToken)
+        private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(Skillset[] skillsets, double minStars, double maxStars, CancellationToken cancellationToken)
         {
             var pool = realm.Run(r => r.All<BeatmapInfo>()
                                        .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
@@ -409,7 +400,7 @@ namespace osu.Game.OsuSR.Screens
                                                + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
                                            osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor)
                                        .AsEnumerable()
-                                       .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1))
+                                       .Select(b => b.ID)
                                        .ToList());
 
             if (pool.Count == 0)
@@ -425,7 +416,7 @@ namespace osu.Game.OsuSR.Screens
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var id = pickWeighted(pool);
+                var id = pool[Random.Shared.Next(pool.Count)];
 
                 if (id == lastPlayed && pool.Count > 1)
                     continue;
@@ -467,21 +458,6 @@ namespace osu.Game.OsuSR.Screens
             return null;
         }
 
-        private static Guid pickWeighted(IReadOnlyList<(Guid ID, double Weight)> pool)
-        {
-            double roll = Random.Shared.NextDouble() * pool.Sum(p => p.Weight);
-
-            foreach (var (id, weight) in pool)
-            {
-                roll -= weight;
-
-                if (roll < 0)
-                    return id;
-            }
-
-            return pool[^1].ID;
-        }
-
         private void startCountdown(WorkingBeatmap working, MapSegment segment)
         {
             Ruleset.Value = osuRuleset;
@@ -496,7 +472,6 @@ namespace osu.Game.OsuSR.Screens
 
             var info = working.BeatmapInfo;
             statusText.Text = $"{segment.Skillset.GetDescription()}  ·  {info.Metadata.Artist} - {info.Metadata.Title} [{info.DifficultyName}] (passage {segment.StarRating:N2}★, map {info.StarRating:N2}★)"
-                              + tagsText(segment.Skillset, info)
                               + $"  ·  {formatTime(segment.FirstObjectTime)} – {formatTime(segment.EndTime)}";
 
             // Fade the next map's music in from just before the segment, so the transition is continuous.
@@ -538,12 +513,6 @@ namespace osu.Game.OsuSR.Screens
                 currentPlayer = player;
                 this.Push(player);
             }
-        }
-
-        private static string tagsText(Skillset skillset, BeatmapInfo info)
-        {
-            var tags = SkillsetTags.MatchingTags(skillset, info.Metadata.UserTags).ToList();
-            return tags.Count == 0 ? string.Empty : $"  ·  tags osu! : {string.Join(", ", tags)}";
         }
 
         private static string formatTime(double ms) => TimeSpan.FromMilliseconds(ms).ToString(@"m\:ss");
