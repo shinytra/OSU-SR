@@ -515,8 +515,8 @@ namespace osu.Game.OsuSR.Screens
             startSegment(next.Beatmap, next.Segment, seamless: true);
         }
 
-        private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, double? previousBpm, Guid? lastPlayed,
-                                                                              Skillset[] recentSkillsets, CancellationToken cancellationToken)
+        private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(
+            Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, double? previousBpm, Guid? lastPlayed, Skillset[] recentSkillsets, CancellationToken cancellationToken)
         {
             var pool = realm.Run(r => r.All<BeatmapInfo>()
                                        .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
