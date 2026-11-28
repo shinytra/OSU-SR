@@ -7,7 +7,6 @@ using System.Linq;
 using System.Threading;
 using osu.Game.Beatmaps;
 using osu.Game.Beatmaps.ControlPoints;
-using osu.Game.Beatmaps.Timing;
 using osu.Game.OsuSR;
 using osu.Game.Rulesets.Difficulty.Preprocessing;
 using osu.Game.Rulesets.Difficulty.Skills;
@@ -309,60 +308,68 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         {
             var playable = (Beatmap<OsuHitObject>)part.Beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, new[] { CreateSegmentMod(part.Segment) }, cancellationToken);
             var timing = playable.ControlPointInfo.TimingPointAt(part.Segment.FirstObjectTime);
-            return new OsuSeriesPartData(part, playable, timing.BeatLength, timing.TimeSignature);
+            return new OsuSeriesPartData(part, playable, new TimingControlPoint { BeatLength = timing.BeatLength, TimeSignature = timing.TimeSignature });
         }
 
-        public IBeatmap CreateSeriesBeatmap(ISeriesPartData first, SeriesSlot slot, CancellationToken cancellationToken = default)
-        {
-            var data = (OsuSeriesPartData)first;
-            var beatmap = new OsuBeatmap { BeatmapInfo = data.Beatmap.BeatmapInfo, ControlPointInfo = new ControlPointInfo() };
-            AppendSeriesPart(beatmap, first, slot, 0);
-            return beatmap;
-        }
-
-        public IReadOnlyList<HitObject> AppendSeriesPart(IBeatmap beatmap, ISeriesPartData part, SeriesSlot slot, double timingSwitchTime)
+        public IReadOnlyList<HitObject> CreateSeriesObjects(ISeriesPartData part, SeriesSlot slot, double timingSwitchTime, SeriesBuildState state)
         {
             var data = (OsuSeriesPartData)part;
-            var composite = (OsuBeatmap)beatmap;
 
             // The tempo of this part applies from the middle of the junction before it, so the last sliders of the previous part keep their own.
-            composite.ControlPointInfo.Add(timingSwitchTime, new TimingControlPoint { BeatLength = data.BeatLength, TimeSignature = data.TimeSignature });
+            state.ControlPoints.Add(timingSwitchTime, data.Timing);
 
-            var added = new List<OsuHitObject>();
-            var last = composite.HitObjects.LastOrDefault();
-            int comboIndex = last?.ComboIndex ?? -1;
-            int comboIndexWithOffsets = last?.ComboIndexWithOffsets ?? -1;
+            var objects = new List<OsuHitObject>();
             int indexInCombo = 0;
 
+            // The part's objects are consumed: they were made for this one use.
             foreach (var h in data.Beatmap.HitObjects)
             {
-                h.StartTime += slot.Shift;
+                // (The shift is relative to where the objects already are, since the part may be placed again if it is late.)
+                h.StartTime += slot.Shift - data.AppliedShift;
 
                 // Each part starts a new combo, and the numbers go on from the previous part.
-                if (added.Count == 0)
+                if (objects.Count == 0)
                     h.NewCombo = true;
 
                 if (h.NewCombo)
                 {
-                    comboIndex++;
-                    comboIndexWithOffsets += 1 + h.ComboOffset;
+                    state.ComboIndex++;
+                    state.ComboIndexWithOffsets += 1 + h.ComboOffset;
                     indexInCombo = 0;
                 }
 
-                h.ComboIndex = comboIndex;
-                h.ComboIndexWithOffsets = comboIndexWithOffsets;
+                h.ComboIndex = state.ComboIndex;
+                h.ComboIndexWithOffsets = state.ComboIndexWithOffsets;
                 h.IndexInCurrentCombo = indexInCombo++;
 
                 // Each part keeps the difficulty settings (approach rate, circle size, overall difficulty, slider speed...) of its own map.
-                h.ApplyDefaults(composite.ControlPointInfo, data.Beatmap.Difficulty);
-                added.Add(h);
+                h.ApplyDefaults(state.ControlPoints, data.Beatmap.Difficulty);
+                objects.Add(h);
             }
 
-            composite.HitObjects.AddRange(added);
-            return added;
+            data.AppliedShift = slot.Shift;
+            return objects;
         }
 
-        private record OsuSeriesPartData(SeriesPart Part, Beatmap<OsuHitObject> Beatmap, double BeatLength, TimeSignature TimeSignature) : ISeriesPartData;
+        public IBeatmap CreateSeriesBeatmap(SeriesPartObjects first)
+        {
+            var beatmap = new OsuBeatmap { BeatmapInfo = first.Part.Beatmap.BeatmapInfo };
+            AppendSeriesPart(beatmap, first);
+            return beatmap;
+        }
+
+        public void AppendSeriesPart(IBeatmap beatmap, SeriesPartObjects part)
+        {
+            var composite = (OsuBeatmap)beatmap;
+            composite.ControlPointInfo.Add(part.TimingSwitchTime, part.Timing);
+            composite.HitObjects.AddRange(part.Objects.Cast<OsuHitObject>());
+        }
+
+        private record OsuSeriesPartData(SeriesPart Part, Beatmap<OsuHitObject> Beatmap, TimingControlPoint Timing) : ISeriesPartData
+        {
+            /// <summary>How far the part's objects have been moved from their own map's times.</summary>
+            public double AppliedShift { get; set; }
+        }
 
         /// <summary>
         /// When playback of a segment starts. With <see cref="SnapToBars"/>, that is a bar line (or half bar, or beat, for slow maps) of the map's own timing,

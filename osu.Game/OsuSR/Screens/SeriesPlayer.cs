@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using osu.Framework.Allocation;
@@ -19,6 +20,7 @@ using osu.Game.Graphics;
 using osu.Game.Graphics.Sprites;
 using osu.Game.Rulesets.Judgements;
 using osu.Game.Rulesets.Objects;
+using osu.Game.Rulesets.Objects.Types;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Scoring;
 using osu.Game.Screens.Play;
@@ -47,6 +49,9 @@ namespace osu.Game.OsuSR.Screens
         /// <summary>How many parts may be on the timeline beyond the one being played.</summary>
         private const int parts_ahead = 2;
 
+        /// <summary>Most time (ms) per frame spent putting hit objects on the playfield.</summary>
+        private const double playfield_budget = 2;
+
         /// <summary>The music of a late part starts at least this long (ms) after the time it was added.</summary>
         private const double late_part_delay = 500;
 
@@ -56,14 +61,19 @@ namespace osu.Game.OsuSR.Screens
         private readonly IBeatmap composite;
         private readonly SeriesFeed feed;
         private readonly SegmentFeedbackStore? feedback;
+        private readonly bool adaptive;
         private readonly HashSet<int> reported = new HashSet<int>();
 
         private readonly List<Track> tracks = new List<Track>();
         private readonly List<BindableDouble> tempos = new List<BindableDouble>();
         private readonly List<double> lastSeek = new List<double>();
         private readonly List<PartStats> stats = new List<PartStats>();
+
+        /// <summary>Hit objects of added parts that are not on the playfield yet: they are put there a few at a time, so no frame is long.</summary>
+        private readonly Queue<HitObject> pendingObjects = new Queue<HitObject>();
         private bool started;
         private bool finishing;
+        private int adaptedParts;
 
         private OsuSpriteText feedbackText = null!;
 
@@ -87,7 +97,8 @@ namespace osu.Game.OsuSR.Screens
         /// <param name="firstSlot">Its slot on the timeline.</param>
         /// <param name="feed">Where the next parts come from.</param>
         /// <param name="feedback">Where "wrongly classified" reports go. Reports are ignored when null.</param>
-        public SeriesPlayer(ISkillsetSegmentFinder finder, IBeatmap composite, SeriesPart first, SeriesSlot firstSlot, SeriesFeed feed, SegmentFeedbackStore? feedback = null)
+        /// <param name="adaptive">Whether the difficulty of the next parts follows how well the player did on the last ones.</param>
+        public SeriesPlayer(ISkillsetSegmentFinder finder, IBeatmap composite, SeriesPart first, SeriesSlot firstSlot, SeriesFeed feed, SegmentFeedbackStore? feedback = null, bool adaptive = false)
             : base(new PlayerConfiguration
             {
                 ShowResults = false,
@@ -99,6 +110,7 @@ namespace osu.Game.OsuSR.Screens
             this.composite = composite;
             this.feed = feed;
             this.feedback = feedback;
+            this.adaptive = adaptive;
 
             parts = new List<SeriesPart> { first };
             slots = new List<SeriesSlot> { firstSlot };
@@ -173,7 +185,9 @@ namespace osu.Game.OsuSR.Screens
 
             double time = GameplayClockContainer.CurrentTime;
 
+            adaptDifficulty(time);
             addNextPart(time);
+            fillPlayfield();
             updateMusic(time);
 
             // A series that ends: finish once the last part is over and the feed has nothing more.
@@ -184,31 +198,99 @@ namespace osu.Game.OsuSR.Screens
             }
         }
 
+        /// <summary>Accuracy under which the next parts get easier, and over which they get harder (adaptive difficulty).</summary>
+        public const double EASIER_BELOW_ACCURACY = 0.85;
+
+        public const double HARDER_ABOVE_ACCURACY = 0.96;
+
+        /// <summary>Stars added to or taken from the range of the next parts after a part.</summary>
+        public const double ADAPTIVE_STEP = 0.2;
+
+        /// <summary>Once a part is over, makes the next ones harder or easier depending on how it went.</summary>
+        private void adaptDifficulty(double time)
+        {
+            if (!adaptive)
+                return;
+
+            while (adaptedParts < parts.Count && time > slots[adaptedParts].EndTime + 700)
+            {
+                var part = stats[adaptedParts++];
+
+                if (part.Maximum <= 0)
+                    continue;
+
+                double accuracy = part.Numeric / part.Maximum;
+
+                if (accuracy < EASIER_BELOW_ACCURACY)
+                    feed.StarOffset -= ADAPTIVE_STEP;
+                else if (accuracy > HARDER_ABOVE_ACCURACY)
+                    feed.StarOffset += ADAPTIVE_STEP;
+            }
+        }
+
         /// <summary>
         /// Adds the next prepared part to the end of the timeline, if there is one and the timeline isn't already far enough ahead.
-        /// This is cheap (moving a part's hit objects and giving them their defaults), the heavy work was done by the feed's thread.
+        /// The feed's thread did the heavy work (the objects exist, are on their slot and have their defaults): this only registers them.
         /// </summary>
         private void addNextPart(double time)
         {
             if (parts.Count - 1 - SeriesTimeline.PartAt(slots, time) >= parts_ahead)
                 return;
 
-            if (!feed.TryTake(out var data))
+            if (!feed.TryTake(out var next))
                 return;
 
-            var previous = parts[^1];
-            var slot = SeriesTimeline.Extend(slots, data.Part, previous, time + late_part_delay);
-            double switchTime = slots[^2].EndTime + slots[^2].Gap / 2;
+            // The feed built this part after the end of the part it knew of. If the series has gone another way (the part is late, or a late part was moved), build it again here.
+            if (Math.Abs(next.PreviousEndTime - slots[^1].EndTime) > 1 || next.Slot.MusicStart < time + late_part_delay - 1)
+                next = rebuild(next, time);
+            else if (next.CompletedPreviousSlot != null)
+                slots[^1] = next.CompletedPreviousSlot;
 
-            var added = finder.AppendSeriesPart(composite, data, slot, switchTime);
+            slots.Add(next.Slot);
+            finder.AppendSeriesPart(composite, next);
 
-            foreach (var h in added)
-                DrawableRuleset.Playfield.Add(h);
+            foreach (var h in next.Objects)
+                pendingObjects.Enqueue(h);
 
-            countAsPlayable(added);
+            countAsPlayable(next.Objects);
 
-            parts.Add(data.Part);
-            addPartState(data.Part);
+            parts.Add(next.Part);
+            addPartState(next.Part);
+        }
+
+        /// <summary>Places a part after the real end of the series so far, on the game thread. Rare: it only happens when the feed didn't keep up.</summary>
+        private SeriesPartObjects rebuild(SeriesPartObjects next, double time)
+        {
+            var state = new SeriesBuildState();
+
+            foreach (var timing in composite.ControlPointInfo.TimingPoints)
+                state.ControlPoints.Add(timing.Time, timing);
+
+            if (composite.HitObjects.LastOrDefault() is IHasComboInformation last)
+            {
+                state.ComboIndex = last.ComboIndex;
+                state.ComboIndexWithOffsets = last.ComboIndexWithOffsets;
+            }
+
+            var newSlots = slots.ToList();
+            var slot = SeriesTimeline.Extend(newSlots, next.Part, parts[^1], time + late_part_delay);
+            var completedPrevious = newSlots[^2];
+            double switchTime = completedPrevious.EndTime + completedPrevious.Gap / 2;
+            var objects = finder.CreateSeriesObjects(next.Data, slot, switchTime, state);
+
+            feed.Resync(newSlots, next.Part, state);
+            return new SeriesPartObjects(next.Part, next.Data, slot, completedPrevious, completedPrevious.EndTime, switchTime, next.Timing, objects);
+        }
+
+        private void fillPlayfield()
+        {
+            if (pendingObjects.Count == 0)
+                return;
+
+            var watch = Stopwatch.StartNew();
+
+            while (pendingObjects.Count > 0 && watch.Elapsed.TotalMilliseconds < playfield_budget)
+                DrawableRuleset.Playfield.Add(pendingObjects.Dequeue());
         }
 
         /// <summary>

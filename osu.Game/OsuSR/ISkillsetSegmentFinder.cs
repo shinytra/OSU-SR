@@ -4,6 +4,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using osu.Game.Beatmaps;
+using osu.Game.Beatmaps.ControlPoints;
 using osu.Game.Rulesets.Mods;
 using osu.Game.Rulesets.Objects;
 
@@ -53,20 +54,24 @@ namespace osu.Game.OsuSR
         ISeriesPartData PrepareSeriesPart(SeriesPart part, CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Creates the beatmap of a series that starts with the given part. Further parts are added with <see cref="AppendSeriesPart"/>.
+        /// Creates the hit objects of a series part at its slot of the series timeline: they get the difficulty settings (approach rate, circle size, ...) of their own map,
+        /// and their combo numbers go on from the previous part. Has no effect outside of <paramref name="state"/>, so it can run on a background thread.
         /// </summary>
-        IBeatmap CreateSeriesBeatmap(ISeriesPartData first, SeriesSlot slot, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Puts a part at the end of a series beatmap (which may be playing): its hit objects are moved to its slot of the series timeline and get the
-        /// difficulty settings (approach rate, circle size, ...) of their own map.
-        /// </summary>
-        /// <param name="beatmap">The series beatmap. Its hit objects and timing points grow.</param>
         /// <param name="part">The prepared part.</param>
         /// <param name="slot">Where the part is on the timeline.</param>
         /// <param name="timingSwitchTime">Timeline time from which the part's tempo applies (between the last object of the previous part and the first of this one).</param>
-        /// <returns>The new hit objects, ready to be added to a playfield.</returns>
-        IReadOnlyList<HitObject> AppendSeriesPart(IBeatmap beatmap, ISeriesPartData part, SeriesSlot slot, double timingSwitchTime);
+        /// <param name="state">What the previous parts left behind (timing points, combo numbers). Updated.</param>
+        IReadOnlyList<HitObject> CreateSeriesObjects(ISeriesPartData part, SeriesSlot slot, double timingSwitchTime, SeriesBuildState state);
+
+        /// <summary>
+        /// Creates the beatmap of a series, which starts with the given part. Further parts are added with <see cref="AppendSeriesPart"/>.
+        /// </summary>
+        IBeatmap CreateSeriesBeatmap(SeriesPartObjects first);
+
+        /// <summary>
+        /// Puts a part at the end of the beatmap of a series (which may be playing).
+        /// </summary>
+        void AppendSeriesPart(IBeatmap beatmap, SeriesPartObjects part);
     }
 
     /// <summary>
@@ -75,6 +80,9 @@ namespace osu.Game.OsuSR
     public interface ISeriesPartData
     {
         SeriesPart Part { get; }
+
+        /// <summary>The tempo of the part.</summary>
+        TimingControlPoint Timing { get; }
     }
 
     /// <summary>

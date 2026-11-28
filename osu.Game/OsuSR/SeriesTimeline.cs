@@ -4,11 +4,36 @@
 using System;
 using System.Collections.Generic;
 using osu.Game.Beatmaps;
+using osu.Game.Beatmaps.ControlPoints;
+using osu.Game.Rulesets.Objects;
 
 namespace osu.Game.OsuSR
 {
     /// <summary>One segment of a series, with the map it comes from.</summary>
     public record SeriesPart(WorkingBeatmap Beatmap, MapSegment Segment);
+
+    /// <summary>What has to be remembered between the parts of a series while their hit objects are created (on a background thread).</summary>
+    public class SeriesBuildState
+    {
+        /// <summary>Timing points of the parts so far, used to give the hit objects their defaults (slider speed).</summary>
+        public ControlPointInfo ControlPoints { get; } = new ControlPointInfo();
+
+        public int ComboIndex = -1;
+        public int ComboIndexWithOffsets = -1;
+    }
+
+    /// <summary>
+    /// A part of a series with everything ready to be put on the running gameplay: its slot on the timeline and its hit objects, created and given their defaults.
+    /// </summary>
+    /// <param name="Part">The part.</param>
+    /// <param name="Data">The prepared part, from which the objects can be created again if the part turns out to be late.</param>
+    /// <param name="Slot">Where it is on the timeline.</param>
+    /// <param name="CompletedPreviousSlot">The slot of the previous part once its gap and tempo to this part are known (null for the first part).</param>
+    /// <param name="PreviousEndTime">When the previous part ended on the timeline, which this slot was built after (0 for the first part).</param>
+    /// <param name="TimingSwitchTime">Timeline time from which this part's tempo applies.</param>
+    /// <param name="Timing">The tempo of this part.</param>
+    /// <param name="Objects">The hit objects, already moved to the slot.</param>
+    public record SeriesPartObjects(SeriesPart Part, ISeriesPartData Data, SeriesSlot Slot, SeriesSlot? CompletedPreviousSlot, double PreviousEndTime, double TimingSwitchTime, TimingControlPoint Timing, IReadOnlyList<HitObject> Objects);
 
     /// <summary>
     /// Where one part of a series sits on the shared timeline of the series (ms).
