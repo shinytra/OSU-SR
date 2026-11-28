@@ -66,21 +66,21 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         /// </summary>
         public static double DefaultMinimumPurity(Skillset skillset) => skillset switch
         {
-            Skillset.Jumps => 0.5,
-            Skillset.FlowAim => 0.4,
-            Skillset.Streams => 0.6,
-            Skillset.SpacedStreams => 0.5,
-            Skillset.Alt => 0.35,
-            Skillset.FingerControl => 0.3,
-            Skillset.Tech => 0.3,
-            Skillset.Sliders => 0.25,
+            Skillset.Jumps => 0.6,
+            Skillset.FlowAim => 0.5,
+            Skillset.Streams => 0.65,
+            Skillset.SpacedStreams => 0.55,
+            Skillset.Alt => 0.45,
+            Skillset.FingerControl => 0.35,
+            Skillset.Tech => 0.35,
+            Skillset.Sliders => 0.3,
             Skillset.LowAr => 0.7,
             Skillset.HighAr => 0.8,
-            Skillset.Stamina => 0.6,
+            Skillset.Stamina => 0.65,
             Skillset.Reading => 0.3,
-            Skillset.JumpsStreams => 0.7,
-            Skillset.FlowStreams => 0.7,
-            Skillset.TechSliders => 0.5,
+            Skillset.JumpsStreams => 0.75,
+            Skillset.FlowStreams => 0.75,
+            Skillset.TechSliders => 0.55,
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
         };
 
@@ -178,7 +178,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             var components = ComponentsOf(skillset);
             var partA = components is { } pair ? sums[pair.First] : null;
             var partB = components is { } other ? sums[other.Second] : null;
-            double minimumPurity = MinimumPurity ?? Math.Min(MAXIMUM_PURITY, DefaultMinimumPurity(skillset) + PurityAdjustments.GetValueOrDefault(skillset));
+            double minimumPurity = minimumPurityFor(skillset);
             var lengths = skillset == Skillset.Stamina ? StaminaSegmentLengths : SegmentLengths;
 
             var candidates = new List<(int First, int Last, double Length, double Score)>();
@@ -246,37 +246,53 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             }
         }
 
+        private double minimumPurityFor(Skillset skillset)
+            => MinimumPurity ?? Math.Min(MAXIMUM_PURITY, DefaultMinimumPurity(skillset) + PurityAdjustments.GetValueOrDefault(skillset));
+
         /// <summary>A gap between two objects at least this long (ms) is a break: a pre-drop or post-drop doesn't run through it.</summary>
         public const double BREAK_GAP = 3_000;
 
         public MapSegment ExtendSegment(IWorkingBeatmap beatmap, MapSegment segment, double preDrop, double postDrop, CancellationToken cancellationToken = default)
         {
-            var playable = beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, Array.Empty<Mod>(), cancellationToken);
-            var objects = playable.HitObjects;
+            var profile = Analyse(beatmap, null, cancellationToken);
+            var objects = profile.Objects;
 
-            int first = objects.ToList().FindIndex(h => h.StartTime >= segment.FirstObjectTime - 0.5);
-            int last = objects.ToList().FindLastIndex(h => h.GetEndTime() <= segment.EndTime + 0.5);
+            int first = findFirst(objects, h => h.StartTime >= segment.FirstObjectTime - 0.5);
+            int last = findLast(objects, h => h.GetEndTime() <= segment.EndTime + 0.5);
 
             if (first < 0 || last < first)
                 return segment;
 
-            while (first > 0 && canJoin(objects[first - 1], objects[first]) && segment.FirstObjectTime - objects[first - 1].StartTime <= preDrop)
+            var own = new SkillsetSums(profile, segment.Skillset);
+            var components = ComponentsOf(segment.Skillset);
+            var partA = components is { } pair ? new SkillsetSums(profile, pair.First) : null;
+            var partB = components is { } other ? new SkillsetSums(profile, other.Second) : null;
+            double minimumPurity = minimumPurityFor(segment.Skillset);
+
+            // The whole part that is played must still be mostly the skillset, not only its drop: extending stops where it would stop being so.
+            bool pureEnough(int from, int to)
+                => own.Purity(from, to) >= minimumPurity
+                   && (partA == null || partB == null || (partA.Purity(from, to) >= MINIMUM_COMPONENT_PURITY && partB.Purity(from, to) >= MINIMUM_COMPONENT_PURITY));
+
+            while (first > 0 && canJoin(objects[first - 1], objects[first]) && segment.FirstObjectTime - objects[first - 1].StartTime <= preDrop && pureEnough(first - 1, last))
                 first--;
 
-            while (last + 1 < objects.Count && canJoin(objects[last], objects[last + 1]) && objects[last + 1].GetEndTime() - segment.EndTime <= postDrop)
+            while (last + 1 < objects.Count && canJoin(objects[last], objects[last + 1]) && objects[last + 1].GetEndTime() - segment.EndTime <= postDrop && pureEnough(first, last + 1))
                 last++;
+
+            var playable = profile.Beatmap ?? beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, Array.Empty<Mod>(), cancellationToken);
 
             if (SnapToBars)
             {
                 const double leniency = 5;
                 double barStart = Math.Max(barLine(playable, objects[first].StartTime, false), objects[first].StartTime - MaximumSnap);
 
-                while (first > 0 && canJoin(objects[first - 1], objects[first]) && objects[first - 1].StartTime >= barStart - leniency)
+                while (first > 0 && canJoin(objects[first - 1], objects[first]) && objects[first - 1].StartTime >= barStart - leniency && pureEnough(first - 1, last))
                     first--;
 
                 double barEnd = Math.Min(barLine(playable, objects[last].GetEndTime(), true), objects[last].GetEndTime() + MaximumSnap);
 
-                while (last + 1 < objects.Count && canJoin(objects[last], objects[last + 1]) && objects[last + 1].StartTime <= barEnd + leniency)
+                while (last + 1 < objects.Count && canJoin(objects[last], objects[last + 1]) && objects[last + 1].StartTime <= barEnd + leniency && pureEnough(first, last + 1))
                     last++;
             }
 
@@ -286,9 +302,32 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                 FirstObjectTime = objects[first].StartTime,
                 EndTime = objects[last].GetEndTime(),
                 ObjectCount = last - first + 1,
+                Purity = own.Purity(first, last),
             };
 
             static bool canJoin(HitObject before, HitObject after) => after.StartTime - before.GetEndTime() < BREAK_GAP;
+
+            static int findFirst(IReadOnlyList<HitObject> list, Func<HitObject, bool> match)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (match(list[i]))
+                        return i;
+                }
+
+                return -1;
+            }
+
+            static int findLast(IReadOnlyList<HitObject> list, Func<HitObject, bool> match)
+            {
+                for (int i = list.Count - 1; i >= 0; i--)
+                {
+                    if (match(list[i]))
+                        return i;
+                }
+
+                return -1;
+            }
         }
 
         private static double barLine(IBeatmap beatmap, double time, bool next)

@@ -354,7 +354,8 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
                 Scores = new Dictionary<Skillset, double> { [Skillset.Streams] = 1 },
             };
 
-            var extended = finder.ExtendSegment(beatmap, hard, 12_000, 5_000);
+            // (Purity is not what this checks: let any build-up and follow-up through.)
+            var extended = new SkillsetSegmentFinder { MinimumPurity = 0 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
 
             // The build-up right before the hard part is included, the notes before the break are not.
             Assert.That(extended.FirstObjectTime, Is.EqualTo(20_000).Within(1));
@@ -364,6 +365,37 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             Assert.That(extended.EndTime, Is.GreaterThan(hardEnd + 3000));
             Assert.That(extended.EndTime, Is.LessThanOrEqualTo(hardEnd + 5000 + finder.MaximumSnap + 1));
             Assert.That(extended.ObjectCount, Is.GreaterThan(56).And.LessThan(56 + 60));
+        }
+
+        [Test]
+        public void TestExtendSegmentStopsWhereTheSkillsetIsNoLongerTheMajority()
+        {
+            double hardStart = 20_000 + 16 * beat / 2;
+            double hardEnd = hardStart + 39 * beat / 4;
+
+            var objects = squareJumps(20_000, 16)
+                          .Concat(stream(hardStart, 40, 150))
+                          .Concat(squareJumps(hardStart + 40 * beat / 4, 60))
+                          .ToList();
+
+            var beatmap = createBeatmap(objects);
+
+            var hard = new MapSegment
+            {
+                Skillset = Skillset.Streams,
+                StartTime = hardStart - 2000,
+                FirstObjectTime = hardStart,
+                EndTime = hardEnd,
+                ObjectCount = 40,
+                Scores = new Dictionary<Skillset, double> { [Skillset.Streams] = 1 },
+            };
+
+            var strict = new SkillsetSegmentFinder { MinimumPurity = 0.8 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
+            var loose = new SkillsetSegmentFinder { MinimumPurity = 0 }.ExtendSegment(beatmap, hard, 12_000, 5_000);
+
+            Assert.That(strict.Purity, Is.GreaterThanOrEqualTo(0.8));
+            Assert.That(strict.ObjectCount, Is.LessThan(loose.ObjectCount));
+            Assert.That(strict.ObjectCount, Is.GreaterThanOrEqualTo(40));
         }
 
         [Test]

@@ -76,6 +76,7 @@ namespace osu.Game.OsuSR.Screens
         private int adaptedParts;
 
         private OsuSpriteText feedbackText = null!;
+        private OsuSpriteText partInfoText = null!;
 
         [Cached(typeof(IGameplayLeaderboardProvider))]
         private readonly EmptyGameplayLeaderboardProvider leaderboardProvider = new EmptyGameplayLeaderboardProvider();
@@ -144,6 +145,16 @@ namespace osu.Game.OsuSR.Screens
                 Alpha = 0,
             });
 
+            // What the current part is (for checking that the detection is right): its skillset and how much of it really is that skillset.
+            AddInternal(partInfoText = new OsuSpriteText
+            {
+                Anchor = Anchor.TopCentre,
+                Origin = Anchor.TopCentre,
+                Y = 4,
+                Font = OsuFont.Default.With(size: 14),
+                Alpha = 0.6f,
+            });
+
             ScoreProcessor.NewJudgement += onJudgement;
         }
 
@@ -185,6 +196,7 @@ namespace osu.Game.OsuSR.Screens
 
             double time = GameplayClockContainer.CurrentTime;
 
+            updatePartInfo(time);
             adaptDifficulty(time);
             addNextPart(time);
             fillPlayfield();
@@ -196,6 +208,20 @@ namespace osu.Game.OsuSR.Screens
                 finishing = true;
                 finish();
             }
+        }
+
+        private int shownPart = -1;
+
+        private void updatePartInfo(double time)
+        {
+            int index = SeriesTimeline.PartAt(slots, time);
+
+            if (index == shownPart || index < 0 || index >= parts.Count)
+                return;
+
+            shownPart = index;
+            var segment = parts[index].Segment;
+            partInfoText.Text = $"{segment.Skillset.GetDescription()} · {segment.Purity:P0} de ce type de notes · {segment.StarRating:N2}★";
         }
 
         /// <summary>Accuracy under which the next parts get easier, and over which they get harder (adaptive difficulty).</summary>
