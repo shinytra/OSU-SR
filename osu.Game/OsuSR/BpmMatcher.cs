@@ -30,5 +30,31 @@ namespace osu.Game.OsuSR
         }
 
         public static bool IsClose(double bpmA, double bpmB, double tolerance) => Distance(bpmA, bpmB) <= tolerance;
+
+        /// <summary>Tempo changes beyond these are too audible to be a "remix" of the music, so a ramp stops there.</summary>
+        public const double MINIMUM_TEMPO = 0.7;
+
+        public const double MAXIMUM_TEMPO = 1.4;
+
+        /// <summary>
+        /// The tempo (1 = unchanged) at which music at <paramref name="fromBpm"/> must play to run at the pulse of <paramref name="toBpm"/>,
+        /// folding half and double time (90 to 180 BPM is a ratio of 1) and limited to <see cref="MINIMUM_TEMPO"/>..<see cref="MAXIMUM_TEMPO"/>.
+        /// </summary>
+        public static double TempoRatio(double fromBpm, double toBpm)
+        {
+            if (fromBpm <= 0 || toBpm <= 0)
+                return 1;
+
+            double ratio = toBpm / fromBpm;
+            double best = ratio;
+
+            foreach (double candidate in new[] { ratio / 2, ratio * 2 })
+            {
+                if (Math.Abs(candidate - 1) < Math.Abs(best - 1))
+                    best = candidate;
+            }
+
+            return Math.Clamp(best, MINIMUM_TEMPO, MAXIMUM_TEMPO);
+        }
     }
 }

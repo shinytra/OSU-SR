@@ -39,6 +39,18 @@ namespace osu.Game.OsuSR
         /// Creates the mod that restricts gameplay to the given segment.
         /// </summary>
         Mod CreateSegmentMod(MapSegment segment);
+
+        /// <summary>
+        /// Makes a segment longer for a series: adds the build-up before it (the pre-drop) and a little of what follows it (the post-drop),
+        /// stopping at breaks, and snapping to bar lines.
+        /// </summary>
+        MapSegment ExtendSegment(IWorkingBeatmap beatmap, MapSegment segment, double preDrop, double postDrop, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Builds a single beatmap holding all parts of a series one after the other, on the given timeline.
+        /// Difficulty settings (approach rate, circle size, ...) come from the first part.
+        /// </summary>
+        IBeatmap CreateSeriesBeatmap(IReadOnlyList<SeriesPart> parts, IReadOnlyList<SeriesSlot> slots, CancellationToken cancellationToken = default);
     }
 
     /// <summary>

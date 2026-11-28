@@ -73,7 +73,7 @@ namespace osu.Game.Tests.Visual.OsuSR
         }
 
         [Test]
-        public void TestSeriesStartsWithoutCountdown()
+        public void TestSeriesIsOneContinuousGameplay()
         {
             AddStep("import beatmap", () => BeatmapImportHelper.LoadQuickOszIntoOsu(Game).WaitSafely());
 
@@ -89,8 +89,14 @@ namespace osu.Game.Tests.Visual.OsuSR
             });
             AddStep("start", () => session.StartSession());
 
-            AddUntilStep("segment player shown", () => Game.ScreenStack.CurrentScreen is SegmentPlayer);
-            AddStep("quit segment", () => Game.ScreenStack.CurrentScreen.Exit());
+            SeriesPlayer player = null!;
+
+            AddUntilStep("series player shown", () => (player = (Game.ScreenStack.CurrentScreen as SeriesPlayer)!) != null);
+            AddAssert("one beatmap for the whole series", () => Game.Beatmap.Value is SeriesWorkingBeatmap);
+            AddAssert("parts on an increasing timeline", () => player.Slots.Zip(player.Slots.Skip(1), (a, b) => b.FirstObjectTime > a.EndTime).All(x => x));
+            AddAssert("all hit objects after the start", () => player.Beatmap.Value.GetPlayableBeatmap(player.Ruleset.Value, player.Mods.Value).HitObjects.All(h => h.StartTime >= 0));
+            AddUntilStep("gameplay clock runs", () => player.CurrentGameplayTime, () => Is.GreaterThan(0));
+            AddStep("quit series", () => Game.ScreenStack.CurrentScreen.Exit());
             AddUntilStep("back at session setup", () => session.IsCurrentScreen());
             AddStep("exit session", () => session.Exit());
         }
