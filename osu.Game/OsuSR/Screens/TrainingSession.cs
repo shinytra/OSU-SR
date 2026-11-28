@@ -891,10 +891,13 @@ namespace osu.Game.OsuSR.Screens
                 var clock = Stopwatch.StartNew();
                 int indexed = 0;
 
+                int passNumber = 0;
+
                 foreach (var (maps, skillsets, rate) in passes)
                 {
+                    passNumber++;
                     token.ThrowIfCancellationRequested();
-                    indexed += runPass(cache, maps, skillsets, rate, indexed, passes.Sum(p => p.Maps.Count), token);
+                    indexed += runPass(cache, maps, skillsets, rate, $"étape {passNumber}/{passes.Count}", token);
                 }
 
                 cache.Save();
@@ -911,7 +914,7 @@ namespace osu.Game.OsuSR.Screens
         }
 
         /// <summary>Analyses the given maps for the given skillsets on all the cores. Returns how many maps were gone through.</summary>
-        private int runPass(SegmentCache cache, List<(Guid ID, double Weight, double BPM, string Hash)> maps, Skillset[] skillsets, bool rate, int before, int grandTotal, CancellationToken token)
+        private int runPass(SegmentCache cache, List<(Guid ID, double Weight, double BPM, string Hash)> maps, Skillset[] skillsets, bool rate, string label, CancellationToken token)
         {
             var queue = new ConcurrentQueue<(Guid ID, double Weight, double BPM, string Hash)>(maps);
             int done = 0;
@@ -949,7 +952,7 @@ namespace osu.Game.OsuSR.Screens
                     int count = Interlocked.Increment(ref done);
 
                     if (count % 20 == 0)
-                        Schedule(() => indexText.Text = $"Indexation de la bibliothèque : {before + count}/{grandTotal} (une seule fois, tu peux jouer pendant ce temps)");
+                        Schedule(() => indexText.Text = $"Indexation de la bibliothèque, {label} : {count}/{maps.Count} maps (une seule fois, tu peux jouer pendant ce temps)");
 
                     lock (saveLock)
                     {
@@ -989,8 +992,8 @@ namespace osu.Game.OsuSR.Screens
                 lastDone = now;
             }
 
-            if (!token.IsCancellationRequested && before + done >= grandTotal)
-                Schedule(() => indexText.Text = $"Bibliothèque indexée ({maps.Count} maps)");
+            if (!token.IsCancellationRequested && label.StartsWith("étape 4", StringComparison.Ordinal))
+                Schedule(() => indexText.Text = "Bibliothèque indexée");
 
             return done;
         }
