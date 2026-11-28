@@ -50,10 +50,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
         FastSlider = 1 << 9,
 
         /// <summary>Low approach rate with many objects on screen.</summary>
-        LowAR = 1 << 10,
+        LowAr = 1 << 10,
 
         /// <summary>High approach rate (objects appear late).</summary>
-        HighAR = 1 << 11,
+        HighAr = 1 << 11,
     }
 
     /// <summary>
@@ -233,10 +233,10 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                         pattern |= NotePattern.Tech;
 
                     if (current.TimePreempt >= LOW_AR_PREEMPT && visible >= LOW_AR_MIN_VISIBLE)
-                        pattern |= NotePattern.LowAR;
+                        pattern |= NotePattern.LowAr;
 
                     if (current.TimePreempt <= HIGH_AR_PREEMPT && fraction <= JUMP_MAX_BEAT_FRACTION)
-                        pattern |= NotePattern.HighAR;
+                        pattern |= NotePattern.HighAr;
                 }
 
                 if (current is Slider slider && beatLength > 0)

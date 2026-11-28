@@ -83,8 +83,7 @@ namespace osu.Game.Tests.Visual.OsuSR
 
             AddUntilStep("wait for first segment", () => (first = (Game.ScreenStack.CurrentScreen as SegmentPlayer)!) != null);
             AddUntilStep("wait for return to session", () => session.IsCurrentScreen());
-            AddUntilStep("second segment uses the other skillset", () => Game.ScreenStack.CurrentScreen is SegmentPlayer second && second != first
-                                                                          && second.Segment.Skillset != first.Segment.Skillset);
+            AddUntilStep("second segment uses the other skillset", () => Game.ScreenStack.CurrentScreen is SegmentPlayer second && second != first && second.Segment.Skillset != first.Segment.Skillset);
 
             AddStep("quit segment", () => Game.ScreenStack.CurrentScreen.Exit());
             AddUntilStep("back at session setup", () => session.IsCurrentScreen());

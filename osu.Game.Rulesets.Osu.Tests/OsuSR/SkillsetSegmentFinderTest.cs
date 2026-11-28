@@ -138,6 +138,13 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             Assert.That(notes.Count(n => n.Pattern.HasFlag(NotePattern.Jump)), Is.GreaterThan(notes.Count * 0.9));
             Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.FlowAim)), Is.False);
             Assert.That(notes.Any(n => n.Pattern.HasFlag(NotePattern.Stream)), Is.False);
+
+            // Corners of a rectangle: right angles, and moves much longer than a circle (the first notes have no angle yet).
+            foreach (var note in notes.Skip(2))
+            {
+                Assert.That(note.AngleDegrees, Is.EqualTo(90).Within(2));
+                Assert.That(note.DistanceRadii, Is.GreaterThan(5));
+            }
         }
 
         [Test]
@@ -159,11 +166,23 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         }
 
         [Test]
+        public void TestLowArNeedsManyObjectsOnScreen()
+        {
+            // 1/2 notes at 180 BPM: AR 8 shows 5 objects at once. AR 9 shows almost as many, but its approach time is too short to count as low AR.
+            var low = finder.Analyse(createBeatmap(squareJumps(0, 60), approachRate: 8)).Notes;
+            var normal = finder.Analyse(createBeatmap(squareJumps(0, 60), approachRate: 9)).Notes;
+
+            // Stop before the end of the map, where fewer objects are left to show.
+            Assert.That(low.Skip(2).Take(40).All(n => n.VisibleObjects >= 4 && n.Pattern.HasFlag(NotePattern.LowAr)));
+            Assert.That(normal.Any(n => n.Pattern.HasFlag(NotePattern.LowAr)), Is.False);
+        }
+
+        [Test]
         public void TestSkillsetsPickTheirOwnPart()
         {
             // 20 s of square jumps, a 3 s break, then 20 s of streams.
-            double streamStart = 20_000 + 3_000;
-            var objects = squareJumps(0, (int)(20_000 / (beat / 2))).Concat(stream(streamStart, (int)(20_000 / (beat / 4)), spacing: 30)).ToList();
+            const double stream_start = 20_000 + 3_000;
+            var objects = squareJumps(0, (int)(20_000 / (beat / 2))).Concat(stream(stream_start, (int)(20_000 / (beat / 4)), spacing: 30)).ToList();
 
             var profile = finder.Analyse(createBeatmap(objects));
 
@@ -173,8 +192,8 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
             TestContext.Out.WriteLine(jumps);
             TestContext.Out.WriteLine(streams);
 
-            Assert.That(jumps.EndTime, Is.LessThan(streamStart));
-            Assert.That(streams.FirstObjectTime, Is.GreaterThanOrEqualTo(streamStart));
+            Assert.That(jumps.EndTime, Is.LessThan(stream_start));
+            Assert.That(streams.FirstObjectTime, Is.GreaterThanOrEqualTo(stream_start));
             Assert.That(jumps.Purity, Is.GreaterThan(0.9));
             Assert.That(streams.Purity, Is.GreaterThan(0.9));
         }
@@ -194,7 +213,7 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         {
             var profile = finder.Analyse(createBeatmap(squareJumps(0, 400)));
             var segments = finder.FindSegments(profile, Skillset.Jumps, maxSegments: 3);
-            double bar = beat * 4;
+            const double bar = beat * 4;
 
             Assert.That(segments, Is.Not.Empty);
 
@@ -241,14 +260,14 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
 
         private static HitCircle circle(double time, Vector2 position) => new HitCircle { StartTime = time, Position = position };
 
-        private static TestWorkingBeatmap createBeatmap(IEnumerable<HitObject> objects)
+        private static TestWorkingBeatmap createBeatmap(IEnumerable<HitObject> objects, float approachRate = 9)
         {
             var beatmap = new Beatmap
             {
                 BeatmapInfo =
                 {
                     Ruleset = new OsuRuleset().RulesetInfo,
-                    Difficulty = { CircleSize = 4, ApproachRate = 9, OverallDifficulty = 8 },
+                    Difficulty = { CircleSize = 4, ApproachRate = approachRate, OverallDifficulty = 8 },
                 },
                 HitObjects = objects.ToList(),
             };

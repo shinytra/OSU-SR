@@ -45,11 +45,11 @@ namespace osu.Game.OsuSR
 
         /// <summary>Low approach rate with many objects on screen.</summary>
         [Description("Low AR")]
-        LowAR,
+        LowAr,
 
         /// <summary>High approach rate.</summary>
         [Description("High AR")]
-        HighAR,
+        HighAr,
 
         /// <summary>Very long streams.</summary>
         [Description("Stamina")]

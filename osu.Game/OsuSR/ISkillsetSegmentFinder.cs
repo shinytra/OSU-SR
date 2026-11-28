@@ -23,7 +23,7 @@ namespace osu.Game.OsuSR
         /// Skillsets without any segment in this map are left out.
         /// </summary>
         IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindSegments(IWorkingBeatmap beatmap, IEnumerable<Skillset> skillsets, int maxSegments,
-                                                                             CancellationToken cancellationToken = default);
+                                                                              CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Creates the mod that restricts gameplay to the given segment.

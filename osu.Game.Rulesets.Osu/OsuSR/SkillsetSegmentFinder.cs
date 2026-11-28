@@ -66,8 +66,8 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             Skillset.FingerControl => 0.3,
             Skillset.Tech => 0.3,
             Skillset.Sliders => 0.25,
-            Skillset.LowAR => 0.7,
-            Skillset.HighAR => 0.8,
+            Skillset.LowAr => 0.7,
+            Skillset.HighAr => 0.8,
             Skillset.Stamina => 0.6,
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
         };
@@ -83,8 +83,8 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             Skillset.FingerControl => NotePattern.FingerControl,
             Skillset.Tech => NotePattern.Tech,
             Skillset.Sliders => NotePattern.FastSlider,
-            Skillset.LowAR => NotePattern.LowAR,
-            Skillset.HighAR => NotePattern.HighAR,
+            Skillset.LowAr => NotePattern.LowAr,
+            Skillset.HighAr => NotePattern.HighAr,
             Skillset.Stamina => NotePattern.Deathstream,
             _ => throw new ArgumentOutOfRangeException(nameof(skillset), skillset, null),
         };
@@ -93,7 +93,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             => FindSegments(beatmap, skillset, maxSegments, null, cancellationToken);
 
         public IReadOnlyDictionary<Skillset, IReadOnlyList<MapSegment>> FindSegments(IWorkingBeatmap beatmap, IEnumerable<Skillset> skillsets, int maxSegments,
-                                                                                    CancellationToken cancellationToken = default)
+                                                                                     CancellationToken cancellationToken = default)
         {
             var profile = Analyse(beatmap, null, cancellationToken);
 
@@ -330,8 +330,8 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                     [Skillset.FingerControl] = speed.Select((s, i) => s * recorder.Rhythm[i]).ToArray(),
                     [Skillset.Tech] = aim.Select((a, i) => a * recorder.Rhythm[i]).ToArray(),
                     [Skillset.Sliders] = aim.Select((a, i) => Math.Max(0, a - aimNoSliders[i])).ToArray(),
-                    [Skillset.LowAR] = reading,
-                    [Skillset.HighAR] = aim.Select((a, i) => a + speed[i]).ToArray(),
+                    [Skillset.LowAr] = reading,
+                    [Skillset.HighAr] = aim.Select((a, i) => a + speed[i]).ToArray(),
                     [Skillset.Stamina] = speed,
                 }, notes, playableBeatmap);
             }
