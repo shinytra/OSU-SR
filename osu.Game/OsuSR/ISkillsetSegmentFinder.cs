@@ -4,7 +4,9 @@
 using System.Collections.Generic;
 using System.Threading;
 using osu.Game.Beatmaps;
+using osu.Game.Beatmaps.ControlPoints;
 using osu.Game.Rulesets.Mods;
+using osu.Game.Rulesets.Objects;
 
 namespace osu.Game.OsuSR
 {
@@ -39,6 +41,48 @@ namespace osu.Game.OsuSR
         /// Creates the mod that restricts gameplay to the given segment.
         /// </summary>
         Mod CreateSegmentMod(MapSegment segment);
+
+        /// <summary>
+        /// Makes a segment longer for a series: adds the build-up before it (the pre-drop) and a little of what follows it (the post-drop),
+        /// stopping at breaks, and snapping to bar lines.
+        /// </summary>
+        MapSegment ExtendSegment(IWorkingBeatmap beatmap, MapSegment segment, double preDrop, double postDrop, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Does the heavy part of getting a series part ready (reading the map, creating its hit objects), so it can be done on a background thread.
+        /// </summary>
+        ISeriesPartData PrepareSeriesPart(SeriesPart part, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Creates the hit objects of a series part at its slot of the series timeline: they get the difficulty settings (approach rate, circle size, ...) of their own map,
+        /// and their combo numbers go on from the previous part. Has no effect outside of <paramref name="state"/>, so it can run on a background thread.
+        /// </summary>
+        /// <param name="part">The prepared part.</param>
+        /// <param name="slot">Where the part is on the timeline.</param>
+        /// <param name="timingSwitchTime">Timeline time from which the part's tempo applies (between the last object of the previous part and the first of this one).</param>
+        /// <param name="state">What the previous parts left behind (timing points, combo numbers). Updated.</param>
+        IReadOnlyList<HitObject> CreateSeriesObjects(ISeriesPartData part, SeriesSlot slot, double timingSwitchTime, SeriesBuildState state);
+
+        /// <summary>
+        /// Creates the beatmap of a series, which starts with the given part. Further parts are added with <see cref="AppendSeriesPart"/>.
+        /// </summary>
+        IBeatmap CreateSeriesBeatmap(SeriesPartObjects first);
+
+        /// <summary>
+        /// Puts a part at the end of the beatmap of a series (which may be playing).
+        /// </summary>
+        void AppendSeriesPart(IBeatmap beatmap, SeriesPartObjects part);
+    }
+
+    /// <summary>
+    /// A series part that has been read and converted, waiting to be put on the timeline (see <see cref="ISkillsetSegmentFinder.PrepareSeriesPart"/>).
+    /// </summary>
+    public interface ISeriesPartData
+    {
+        SeriesPart Part { get; }
+
+        /// <summary>The tempo of the part.</summary>
+        TimingControlPoint Timing { get; }
     }
 
     /// <summary>

@@ -45,6 +45,15 @@ namespace osu.Game.OsuSR.Screens
         /// <remarks>Some skillsets only exist in a few maps, so this is generous.</remarks>
         private const int max_attempts = 40;
 
+        /// <summary>How many of the last maps played are avoided in a series, so it doesn't come back to the same few.</summary>
+        private const int recent_maps_to_avoid = 6;
+
+        /// <summary>How much of the build-up before the hard part (the pre-drop) a series part includes at most (ms).</summary>
+        public const double PRE_DROP = 12_000;
+
+        /// <summary>How much of what follows the hard part (the post-drop) a series part includes at most (ms).</summary>
+        public const double POST_DROP = 5_000;
+
         /// <summary>A tempo-matched pool needs at least this many maps, otherwise the tolerance is widened.</summary>
         private const int min_bpm_pool_size = 5;
 
@@ -79,7 +88,13 @@ namespace osu.Game.OsuSR.Screens
         /// </summary>
         public readonly BindableBool SeriesMode = new BindableBool();
 
-        /// <summary>How many segments a series lasts.</summary>
+        /// <summary>Series mode that never ends (until the player leaves): the next segments are found and loaded in the background while playing.</summary>
+        public readonly BindableBool InfiniteMode = new BindableBool();
+
+        /// <summary>In a series: makes the next parts easier when the player struggles and harder when they play them very well.</summary>
+        public readonly BindableBool AdaptiveDifficulty = new BindableBool();
+
+        /// <summary>How many segments a series lasts (unless it is infinite).</summary>
         public readonly BindableInt SeriesLength = new BindableInt(5) { MinValue = 1, MaxValue = 30 };
 
         /// <summary>Whether the next map's tempo has to be close to the current one's, so the beat doesn't jump between segments.</summary>
@@ -96,6 +111,8 @@ namespace osu.Game.OsuSR.Screens
         /// <summary>"Wrongly classified" reports and the purity adjustments they cause.</summary>
         public SegmentFeedbackStore Feedback { get; private set; } = null!;
 
+        private SegmentCache segmentCache = null!;
+
         [Resolved]
         private RealmAccess realm { get; set; } = null!;
 
@@ -104,6 +121,9 @@ namespace osu.Game.OsuSR.Screens
 
         [Resolved]
         private RulesetStore rulesets { get; set; } = null!;
+
+        [Resolved]
+        private AudioManager audio { get; set; } = null!;
 
         [Resolved]
         private MusicController musicController { get; set; } = null!;
@@ -130,10 +150,7 @@ namespace osu.Game.OsuSR.Screens
         private Guid? currentBeatmapId;
         private double? currentBpm;
 
-        /// <summary>In a series: the segment being found (or found) while the current one plays.</summary>
-        private Task<(WorkingBeatmap Beatmap, MapSegment Segment)?>? preparedNext;
-
-        private CancellationTokenSource? preparedNextCancellation;
+        private SeriesPlayer? currentSeriesPlayer;
         private bool running;
 
         /// <param name="skillsets">The skillsets to train. Defaults to the ones picked last. They can be changed on the setup panel.</param>
@@ -153,6 +170,7 @@ namespace osu.Game.OsuSR.Screens
         {
             osuRuleset = rulesets.GetRuleset("osu") ?? throw new InvalidOperationException("The osu! ruleset is not available.");
             Feedback = new SegmentFeedbackStore(storage);
+            segmentCache = new SegmentCache(storage);
             finder = finderOverride ?? ((IHasSkillsetSegments)osuRuleset.CreateInstance()).CreateSkillsetSegmentFinder();
 
             InternalChildren = new Drawable[]
@@ -241,6 +259,16 @@ namespace osu.Game.OsuSR.Screens
                                         {
                                             LabelText = "Mode série (aucune pause entre les passages)",
                                             Current = SeriesMode,
+                                        },
+                                        new SettingsCheckbox
+                                        {
+                                            LabelText = "Série infinie (jusqu'à ce que tu quittes)",
+                                            Current = InfiniteMode,
+                                        },
+                                        new SettingsCheckbox
+                                        {
+                                            LabelText = "Difficulté adaptative (selon ta précision)",
+                                            Current = AdaptiveDifficulty,
                                         },
                                         new SettingsSlider<int>
                                         {
@@ -341,6 +369,20 @@ namespace osu.Game.OsuSR.Screens
         {
             base.OnResuming(e);
 
+            var seriesPlayer = currentSeriesPlayer;
+            currentSeriesPlayer = null;
+
+            if (seriesPlayer != null)
+            {
+                results.AddRange(seriesPlayer.Results);
+                updateFeedbackSummary();
+
+                stopSession(seriesPlayer.Results.Count > 0
+                    ? $"Série terminée : {results.Count} passage(s) joué(s)."
+                    : null);
+                return;
+            }
+
             var player = currentPlayer;
             currentPlayer = null;
 
@@ -358,25 +400,13 @@ namespace osu.Game.OsuSR.Screens
             results.Add(player.Result);
             lastResultText.Text = $"Dernier passage : {player.Result.Accuracy:P2}, combo {player.Result.MaxCombo}x, score {player.Result.TotalScore:N0}  ·  {results.Count} passage(s), précision moyenne {results.Average(r => r.Accuracy):P2}";
 
-            if (SeriesMode.Value)
-            {
-                if (results.Count >= SeriesLength.Value)
-                {
-                    stopSession($"Série terminée : {results.Count} passage(s), précision moyenne {results.Average(r => r.Accuracy):P2}.");
-                    return;
-                }
-
-                startPreparedSegment();
-                return;
-            }
-
             prepareNextSegment();
         }
 
         public override bool OnExiting(ScreenExitEvent e)
         {
+            saveSegmentCache();
             preparationCancellation?.Cancel();
-            preparedNextCancellation?.Cancel();
             restoreVolume();
             restoreMods();
             return base.OnExiting(e);
@@ -397,19 +427,22 @@ namespace osu.Game.OsuSR.Screens
             startedSkillsets.Clear();
             currentBeatmapId = null;
             currentBpm = null;
-            preparedNext = null;
             lastResultText.Text = string.Empty;
             setupPanel.FadeOut(200);
 
-            prepareNextSegment();
+            if (SeriesMode.Value)
+                startSeries();
+            else
+                prepareNextSegment();
         }
+
+        private void saveSegmentCache() => Task.Run(segmentCache.Save);
 
         private void stopSession(string? summary = null)
         {
+            saveSegmentCache();
             running = false;
             preparationCancellation?.Cancel();
-            preparedNextCancellation?.Cancel();
-            preparedNext = null;
             restoreMods();
             restoreVolume();
             countdownText.FadeOut(200);
@@ -452,7 +485,9 @@ namespace osu.Game.OsuSR.Screens
             var recent = startedSkillsets.ToArray();
             finder.PurityAdjustments = Feedback.PurityAdjustments;
 
-            return Task.Run(() => findNextSegment(skillsets, min, max, preferTagged, previousBpm, excluded, recent, cancellationToken), cancellationToken);
+            var recentMaps = excluded is Guid id ? new[] { id } : Array.Empty<Guid>();
+
+            return Task.Run(() => findNextSegment(loadPool(skillsets, min, max, preferTagged), skillsets, min, max, previousBpm, recentMaps, recent, cancellationToken), cancellationToken);
         }
 
         private void handleSearchResult(Task<(WorkingBeatmap Beatmap, MapSegment Segment)?> search, CancellationTokenSource cancellation)
@@ -476,57 +511,31 @@ namespace osu.Game.OsuSR.Screens
             }
 
             var next = search.GetResultSafely()!.Value;
-            startSegment(next.Beatmap, next.Segment, seamless: false);
+            startSegment(next.Beatmap, next.Segment);
         }
 
-        /// <summary>
-        /// In a series: starts the segment that was found while the previous one played, as soon as it is found.
-        /// </summary>
-        private void startPreparedSegment()
+        /// <summary>The maps a session may pick from: ranked, approved or loved osu! maps whose star rating can have a segment in range.</summary>
+        private List<(Guid ID, double Weight, double BPM)> loadPool(Skillset[] skillsets, double minStars, double maxStars, bool preferTagged)
         {
-            var search = preparedNext;
-            var cancellation = preparedNextCancellation;
-
-            if (search == null || cancellation == null)
-            {
-                // Nothing was prepared (the very first segment of a series is found the usual way).
-                prepareNextSegment();
-                return;
-            }
-
-            preparedNext = null;
-            statusText.Text = "Recherche du prochain passage…";
-            search.ContinueWith(_ => Schedule(() => handleSeriesSearchResult(search, cancellation)), TaskContinuationOptions.None);
+            return realm.Run(r => r.All<BeatmapInfo>()
+                                   .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
+                                           + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
+                                           + $" AND ({nameof(BeatmapInfo.Status)} == $3 OR {nameof(BeatmapInfo.Status)} == $4 OR {nameof(BeatmapInfo.Status)} == $5)"
+                                           + $" AND {nameof(BeatmapInfo.Hidden)} == false"
+                                           + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
+                                       osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor,
+                                       (int)BeatmapOnlineStatus.Ranked, (int)BeatmapOnlineStatus.Approved, (int)BeatmapOnlineStatus.Loved)
+                                   .AsEnumerable()
+                                   .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM))
+                                   .ToList());
         }
 
-        private void handleSeriesSearchResult(Task<(WorkingBeatmap Beatmap, MapSegment Segment)?> search, CancellationTokenSource cancellation)
-        {
-            if (cancellation.IsCancellationRequested || !running)
-                return;
-
-            if (search.IsFaulted || search.GetResultSafely() == null)
-            {
-                // Same handling as a regular search, which also says why.
-                handleSearchResult(search, cancellation);
-                return;
-            }
-
-            var next = search.GetResultSafely()!.Value;
-            startSegment(next.Beatmap, next.Segment, seamless: true);
-        }
-
+        // candidates: the maps to pick from (see loadPool). recentMaps: maps played lately, which are skipped as long as there are others.
         private (WorkingBeatmap Beatmap, MapSegment Segment)? findNextSegment(
-            Skillset[] skillsets, double minStars, double maxStars, bool preferTagged, double? previousBpm, Guid? lastPlayed, Skillset[] recentSkillsets, CancellationToken cancellationToken)
+            List<(Guid ID, double Weight, double BPM)> candidates, Skillset[] skillsets, double minStars, double maxStars, double? previousBpm, IReadOnlyCollection<Guid> recentMaps,
+            Skillset[] recentSkillsets, CancellationToken cancellationToken)
         {
-            var pool = realm.Run(r => r.All<BeatmapInfo>()
-                                       .Filter($"{nameof(BeatmapInfo.Ruleset)}.{nameof(RulesetInfo.ShortName)} == $0"
-                                               + $" AND {nameof(BeatmapInfo.StarRating)} >= $1 AND {nameof(BeatmapInfo.StarRating)} <= $2"
-                                               + $" AND {nameof(BeatmapInfo.Hidden)} == false"
-                                               + $" AND {nameof(BeatmapInfo.BeatmapSet)}.{nameof(BeatmapSetInfo.DeletePending)} == false",
-                                           osuRuleset.ShortName, minStars * map_stars_lower_factor, maxStars * map_stars_upper_factor)
-                                       .AsEnumerable()
-                                       .Select(b => (b.ID, Weight: preferTagged ? SkillsetTags.Weight(skillsets, b.Metadata.UserTags.ToList()) : 1, b.BPM))
-                                       .ToList());
+            var pool = candidates;
 
             if (pool.Count == 0)
                 return null;
@@ -555,7 +564,7 @@ namespace osu.Game.OsuSR.Screens
 
                 var id = pickWeighted(pool);
 
-                if (id == lastPlayed && pool.Count > 1)
+                if (recentMaps.Contains(id) && pool.Count > recentMaps.Count)
                     continue;
 
                 var info = realm.Run(r => r.Find<BeatmapInfo>(id)?.Detach());
@@ -567,15 +576,36 @@ namespace osu.Game.OsuSR.Screens
 
                 try
                 {
-                    var found = finder.FindSegments(working, skillsets, 3, cancellationToken);
+                    var adjustments = finder.PurityAdjustments;
+                    string hash = info.MD5Hash;
+
+                    // Maps analysed before (in this or an earlier session) are not analysed again.
+                    var missing = skillsets.Where(s => !segmentCache.TryGet(hash, s, adjustments.GetValueOrDefault(s), out _)).ToArray();
+
+                    if (missing.Length > 0)
+                    {
+                        var found = finder.FindSegments(working, missing, 3, cancellationToken);
+
+                        foreach (var skillset in missing)
+                            segmentCache.Set(hash, skillset, adjustments.GetValueOrDefault(skillset), found.TryGetValue(skillset, out var s) ? s : Array.Empty<MapSegment>());
+                    }
 
                     // The first skillset in preference order that has a segment whose own star rating is in range.
                     foreach (var skillset in preference)
                     {
-                        if (!found.TryGetValue(skillset, out var segments))
+                        double adjustment = adjustments.GetValueOrDefault(skillset);
+
+                        if (!segmentCache.TryGet(hash, skillset, adjustment, out var segments) || segments.Count == 0)
                             continue;
 
-                        var inRange = segments.Select(s => s with { BeatmapID = id, StarRating = finder.CalculateStarRating(working, s, cancellationToken) })
+                        // The star rating of a segment is calculated once, then remembered with it.
+                        if (segments.Any(s => s.StarRating == null))
+                        {
+                            segments = segments.Select(s => s.StarRating == null ? s with { StarRating = finder.CalculateStarRating(working, s, cancellationToken) } : s).ToList();
+                            segmentCache.Set(hash, skillset, adjustment, segments);
+                        }
+
+                        var inRange = segments.Select(s => s with { BeatmapID = id })
                                               .Where(s => s.StarRating >= minStars && s.StarRating <= maxStars)
                                               .ToList();
 
@@ -612,10 +642,7 @@ namespace osu.Game.OsuSR.Screens
 
         /// <param name="working">The map to play.</param>
         /// <param name="segment">The segment to play.</param>
-        /// <param name="seamless">
-        /// Whether to play it right away, with no countdown (series). Otherwise there is a countdown while the music fades in.
-        /// </param>
-        private void startSegment(WorkingBeatmap working, MapSegment segment, bool seamless)
+        private void startSegment(WorkingBeatmap working, MapSegment segment)
         {
             currentBeatmapId = segment.BeatmapID;
             currentBpm = working.BeatmapInfo.BPM;
@@ -636,18 +663,15 @@ namespace osu.Game.OsuSR.Screens
                               + tagsText(segment.Skillset, info)
                               + $"  ·  {formatTime(segment.FirstObjectTime)} – {formatTime(segment.EndTime)}";
 
-            if (!seamless)
-            {
-                // Fade the next map's music in from just before the segment, so the transition is continuous.
-                double previewStart = Math.Max(0, segment.StartTime - COUNTDOWN_DURATION);
-                musicController.SeekTo(previewStart);
-                musicController.Play();
-                musicController.CurrentTrack.VolumeTo(0).Then().VolumeTo(1, COUNTDOWN_DURATION, Easing.OutQuad);
-            }
+            // Fade the next map's music in from just before the segment, so the transition is continuous.
+            double previewStart = Math.Max(0, segment.StartTime - COUNTDOWN_DURATION);
+            musicController.SeekTo(previewStart);
+            musicController.Play();
+            musicController.CurrentTrack.VolumeTo(0).Then().VolumeTo(1, COUNTDOWN_DURATION, Easing.OutQuad);
 
-            var player = new SegmentPlayer(segment, Feedback, seamless);
+            var player = new SegmentPlayer(segment, Feedback);
             bool loaded = false;
-            bool countdownDone = seamless;
+            bool countdownDone = false;
 
             LoadComponentAsync(player, _ =>
             {
@@ -655,22 +679,19 @@ namespace osu.Game.OsuSR.Screens
                 pushWhenReady();
             });
 
-            if (!seamless)
+            countdownText.FadeIn(100);
+
+            for (int i = 0; i < 3; i++)
             {
-                countdownText.FadeIn(100);
-
-                for (int i = 0; i < 3; i++)
-                {
-                    int number = 3 - i;
-                    Scheduler.AddDelayed(() => countdownText.Text = number.ToString(), i * COUNTDOWN_DURATION / 3);
-                }
-
-                Scheduler.AddDelayed(() =>
-                {
-                    countdownDone = true;
-                    pushWhenReady();
-                }, COUNTDOWN_DURATION);
+                int number = 3 - i;
+                Scheduler.AddDelayed(() => countdownText.Text = number.ToString(), i * COUNTDOWN_DURATION / 3);
             }
+
+            Scheduler.AddDelayed(() =>
+            {
+                countdownDone = true;
+                pushWhenReady();
+            }, COUNTDOWN_DURATION);
 
             void pushWhenReady()
             {
@@ -680,22 +701,121 @@ namespace osu.Game.OsuSR.Screens
                 countdownText.FadeOut(100);
                 currentPlayer = player;
                 this.Push(player);
-
-                prepareFollowingSegment();
             }
         }
 
-        /// <summary>
-        /// In a series: while this segment is played, finds the next one (and gets its map ready), so there is nothing to wait for when it ends.
-        /// </summary>
-        private void prepareFollowingSegment()
+        private void startSeries()
         {
-            if (!SeriesMode.Value || results.Count + 1 >= SeriesLength.Value)
-                return;
+            preparationCancellation?.Cancel();
+            var cancellation = preparationCancellation = new CancellationTokenSource();
 
-            preparedNextCancellation?.Cancel();
-            var cancellation = preparedNextCancellation = new CancellationTokenSource();
-            preparedNext = searchNextSegment(cancellation.Token);
+            var skillsets = SelectedSkillsets;
+            double min = MinimumStars.Value;
+            double max = MaximumStars.Value;
+            bool preferTagged = PreferTaggedMaps.Value;
+            bool matchBpm = MatchBpm.Value;
+            finder.PurityAdjustments = Feedback.PurityAdjustments;
+
+            // Only the feed's thread touches these.
+            var played = new List<Skillset>();
+            var recentMaps = new List<Guid>();
+            double? bpm = null;
+            var seriesFinder = finder;
+            SeriesFeed? seriesFeed = null;
+            bool adaptive = AdaptiveDifficulty.Value;
+
+            // The candidates are looked up once for the whole series, not for each part.
+            List<(Guid ID, double Weight, double BPM)>? pool = null;
+
+            SeriesPart? findNext(CancellationToken token)
+            {
+                // With adaptive difficulty the candidates cover the range the offset can reach.
+                double reach = adaptive ? SeriesFeed.MAXIMUM_STAR_OFFSET : 0;
+                pool ??= loadPool(skillsets, Math.Max(0, min - reach), max + reach, preferTagged);
+
+                double offset = adaptive ? seriesFeed?.StarOffset ?? 0 : 0;
+                var found = findNextSegment(pool, skillsets, Math.Max(0, min + offset), max + offset, matchBpm ? bpm : null, recentMaps, played.ToArray(), token);
+
+                if (found == null)
+                    return null;
+
+                var (working, segment) = found.Value;
+                played.Add(segment.Skillset);
+
+                // Not the same map again for a while.
+                recentMaps.Add(segment.BeatmapID!.Value);
+
+                if (recentMaps.Count > recent_maps_to_avoid)
+                    recentMaps.RemoveAt(0);
+
+                bpm = working.BeatmapInfo.BPM;
+
+                return new SeriesPart(working, seriesFinder.ExtendSegment(working, segment, PRE_DROP, POST_DROP, token));
+            }
+
+            var feed = new SeriesFeed(seriesFinder, findNext, InfiniteMode.Value ? int.MaxValue : SeriesLength.Value);
+            seriesFeed = feed;
+            feed.Start();
+
+            statusText.Text = "Préparation du premier passage…";
+            waitForFirstPart(feed, cancellation);
+        }
+
+        /// <summary>Starts the series as soon as its first part is ready: the others are found and added while it plays.</summary>
+        private void waitForFirstPart(SeriesFeed feed, CancellationTokenSource cancellation)
+        {
+            if (cancellation.IsCancellationRequested || !running)
+            {
+                feed.Dispose();
+                return;
+            }
+
+            if (feed.NothingFound)
+            {
+                feed.Dispose();
+                statusText.Text = $"Aucun passage {string.Join(" / ", SelectedSkillsets.Select(s => s.GetDescription()))} trouvé dans les maps ranked/loved entre {MinimumStars.Value:N1} et {MaximumStars.Value:N1} étoiles.";
+                stopSession();
+                return;
+            }
+
+            if (!feed.TryTake(out var first))
+            {
+                if (feed.Exhausted)
+                {
+                    feed.Dispose();
+                    statusText.Text = "Erreur pendant la préparation de la série (voir les logs).";
+                    stopSession();
+                    return;
+                }
+
+                Scheduler.AddDelayed(() => waitForFirstPart(feed, cancellation), 200);
+                return;
+            }
+
+            var composite = finder.CreateSeriesBeatmap(first);
+            var working = new SeriesWorkingBeatmap(new[] { first.Part }, composite, SeriesTimeline.LIVE_LENGTH, audio);
+
+            Ruleset.Value = osuRuleset;
+            Beatmap.Value = working;
+            Mods.Value = new[] { osuRuleset.CreateInstance().CreateMod<ModNoFail>()! };
+
+            ApplyToBackground(b => ((BackgroundScreenBeatmap)b).Beatmap = first.Part.Beatmap);
+
+            statusText.Text = InfiniteMode.Value ? "Série infinie (Échap pour quitter)" : $"Série de {SeriesLength.Value} passage(s)";
+
+            var player = new SeriesPlayer(finder, composite, first.Part, first.Slot, feed, Feedback, AdaptiveDifficulty.Value);
+
+            LoadComponentAsync(player, _ =>
+            {
+                if (!running || !this.IsCurrentScreen())
+                {
+                    feed.Dispose();
+                    return;
+                }
+
+                currentSeriesPlayer = player;
+                this.Push(player);
+            });
         }
 
         private static string tagsText(Skillset skillset, BeatmapInfo info)

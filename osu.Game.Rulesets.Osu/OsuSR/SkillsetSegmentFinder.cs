@@ -6,15 +6,18 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using osu.Game.Beatmaps;
+using osu.Game.Beatmaps.ControlPoints;
 using osu.Game.OsuSR;
 using osu.Game.Rulesets.Difficulty.Preprocessing;
 using osu.Game.Rulesets.Difficulty.Skills;
 using osu.Game.Rulesets.Mods;
 using osu.Game.Rulesets.Objects;
+using osu.Game.Rulesets.Osu.Beatmaps;
 using osu.Game.Rulesets.Osu.Difficulty;
 using osu.Game.Rulesets.Osu.Difficulty.Evaluators.Aim;
 using osu.Game.Rulesets.Osu.Difficulty.Evaluators.Speed;
 using osu.Game.Rulesets.Osu.Difficulty.Skills;
+using osu.Game.Rulesets.Osu.Objects;
 
 namespace osu.Game.Rulesets.Osu.OsuSR
 {
@@ -233,7 +236,7 @@ namespace osu.Game.Rulesets.Osu.OsuSR
                 return new MapSegment
                 {
                     Skillset = skillset,
-                    StartTime = Math.Max(0, startTimeFor(profile, objects[first].StartTime)),
+                    StartTime = Math.Max(0, startTimeFor(profile.Beatmap, objects[first].StartTime)),
                     FirstObjectTime = objects[first].StartTime,
                     EndTime = objects[last].GetEndTime(),
                     ObjectCount = last - first + 1,
@@ -243,16 +246,141 @@ namespace osu.Game.Rulesets.Osu.OsuSR
             }
         }
 
+        /// <summary>A gap between two objects at least this long (ms) is a break: a pre-drop or post-drop doesn't run through it.</summary>
+        public const double BREAK_GAP = 3_000;
+
+        public MapSegment ExtendSegment(IWorkingBeatmap beatmap, MapSegment segment, double preDrop, double postDrop, CancellationToken cancellationToken = default)
+        {
+            var playable = beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, Array.Empty<Mod>(), cancellationToken);
+            var objects = playable.HitObjects;
+
+            int first = objects.ToList().FindIndex(h => h.StartTime >= segment.FirstObjectTime - 0.5);
+            int last = objects.ToList().FindLastIndex(h => h.GetEndTime() <= segment.EndTime + 0.5);
+
+            if (first < 0 || last < first)
+                return segment;
+
+            while (first > 0 && canJoin(objects[first - 1], objects[first]) && segment.FirstObjectTime - objects[first - 1].StartTime <= preDrop)
+                first--;
+
+            while (last + 1 < objects.Count && canJoin(objects[last], objects[last + 1]) && objects[last + 1].GetEndTime() - segment.EndTime <= postDrop)
+                last++;
+
+            if (SnapToBars)
+            {
+                const double leniency = 5;
+                double barStart = Math.Max(barLine(playable, objects[first].StartTime, false), objects[first].StartTime - MaximumSnap);
+
+                while (first > 0 && canJoin(objects[first - 1], objects[first]) && objects[first - 1].StartTime >= barStart - leniency)
+                    first--;
+
+                double barEnd = Math.Min(barLine(playable, objects[last].GetEndTime(), true), objects[last].GetEndTime() + MaximumSnap);
+
+                while (last + 1 < objects.Count && canJoin(objects[last], objects[last + 1]) && objects[last + 1].StartTime <= barEnd + leniency)
+                    last++;
+            }
+
+            return segment with
+            {
+                StartTime = Math.Max(0, startTimeFor(playable, objects[first].StartTime)),
+                FirstObjectTime = objects[first].StartTime,
+                EndTime = objects[last].GetEndTime(),
+                ObjectCount = last - first + 1,
+            };
+
+            static bool canJoin(HitObject before, HitObject after) => after.StartTime - before.GetEndTime() < BREAK_GAP;
+        }
+
+        private static double barLine(IBeatmap beatmap, double time, bool next)
+        {
+            var timingPoint = beatmap.ControlPointInfo.TimingPointAt(time);
+            double barLength = timingPoint.BeatLength * timingPoint.TimeSignature.Numerator;
+
+            if (barLength <= 0)
+                return time;
+
+            double bars = (time - timingPoint.Time) / barLength;
+            double index = next ? Math.Ceiling(bars - 1e-6) : Math.Floor(bars + 1e-6);
+            return timingPoint.Time + index * barLength;
+        }
+
+        public ISeriesPartData PrepareSeriesPart(SeriesPart part, CancellationToken cancellationToken = default)
+        {
+            var playable = (Beatmap<OsuHitObject>)part.Beatmap.GetPlayableBeatmap(new OsuRuleset().RulesetInfo, new[] { CreateSegmentMod(part.Segment) }, cancellationToken);
+            var timing = playable.ControlPointInfo.TimingPointAt(part.Segment.FirstObjectTime);
+            return new OsuSeriesPartData(part, playable, new TimingControlPoint { BeatLength = timing.BeatLength, TimeSignature = timing.TimeSignature });
+        }
+
+        public IReadOnlyList<HitObject> CreateSeriesObjects(ISeriesPartData part, SeriesSlot slot, double timingSwitchTime, SeriesBuildState state)
+        {
+            var data = (OsuSeriesPartData)part;
+
+            // The tempo of this part applies from the middle of the junction before it, so the last sliders of the previous part keep their own.
+            state.ControlPoints.Add(timingSwitchTime, data.Timing);
+
+            var objects = new List<OsuHitObject>();
+            int indexInCombo = 0;
+
+            // The part's objects are consumed: they were made for this one use.
+            foreach (var h in data.Beatmap.HitObjects)
+            {
+                // (The shift is relative to where the objects already are, since the part may be placed again if it is late.)
+                h.StartTime += slot.Shift - data.AppliedShift;
+
+                // Each part starts a new combo, and the numbers go on from the previous part.
+                if (objects.Count == 0)
+                    h.NewCombo = true;
+
+                if (h.NewCombo)
+                {
+                    state.ComboIndex++;
+                    state.ComboIndexWithOffsets += 1 + h.ComboOffset;
+                    indexInCombo = 0;
+                }
+
+                h.ComboIndex = state.ComboIndex;
+                h.ComboIndexWithOffsets = state.ComboIndexWithOffsets;
+                h.IndexInCurrentCombo = indexInCombo++;
+
+                // Each part keeps the difficulty settings (approach rate, circle size, overall difficulty, slider speed...) of its own map.
+                h.ApplyDefaults(state.ControlPoints, data.Beatmap.Difficulty);
+                objects.Add(h);
+            }
+
+            data.AppliedShift = slot.Shift;
+            return objects;
+        }
+
+        public IBeatmap CreateSeriesBeatmap(SeriesPartObjects first)
+        {
+            var beatmap = new OsuBeatmap { BeatmapInfo = first.Part.Beatmap.BeatmapInfo };
+            AppendSeriesPart(beatmap, first);
+            return beatmap;
+        }
+
+        public void AppendSeriesPart(IBeatmap beatmap, SeriesPartObjects part)
+        {
+            var composite = (OsuBeatmap)beatmap;
+            composite.ControlPointInfo.Add(part.TimingSwitchTime, part.Timing);
+            composite.HitObjects.AddRange(part.Objects.Cast<OsuHitObject>());
+        }
+
+        private record OsuSeriesPartData(SeriesPart Part, Beatmap<OsuHitObject> Beatmap, TimingControlPoint Timing) : ISeriesPartData
+        {
+            /// <summary>How far the part's objects have been moved from their own map's times.</summary>
+            public double AppliedShift { get; set; }
+        }
+
         /// <summary>
         /// When playback of a segment starts. With <see cref="SnapToBars"/>, that is a bar line (or half bar, or beat, for slow maps) of the map's own timing,
         /// at least <see cref="LeadIn"/> × 0.75 before the first object, so the music's pulse starts in phase with the notes. Otherwise it is <see cref="LeadIn"/> before.
         /// </summary>
-        private double startTimeFor(SkillsetProfile profile, double firstObjectTime)
+        private double startTimeFor(IBeatmap? beatmap, double firstObjectTime)
         {
-            if (!SnapToBars || profile.Beatmap == null)
+            if (!SnapToBars || beatmap == null)
                 return firstObjectTime - LeadIn;
 
-            var timingPoint = profile.Beatmap.ControlPointInfo.TimingPointAt(firstObjectTime);
+            var timingPoint = beatmap.ControlPointInfo.TimingPointAt(firstObjectTime);
             double beatLength = timingPoint.BeatLength;
             double unit = beatLength * timingPoint.TimeSignature.Numerator;
 

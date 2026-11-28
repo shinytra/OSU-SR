@@ -331,6 +331,116 @@ namespace osu.Game.Rulesets.Osu.Tests.OsuSR
         }
 
         [Test]
+        public void TestExtendSegmentAddsPreAndPostDropButStopsAtBreaks()
+        {
+            double hardStart = 20_000 + 16 * beat / 2;
+            double hardEnd = hardStart + 39 * beat / 4;
+
+            var objects = squareJumps(0, 10)
+                          .Concat(squareJumps(20_000, 16))
+                          .Concat(stream(hardStart, 40, 150))
+                          .Concat(squareJumps(hardStart + 40 * beat / 4, 60))
+                          .ToList();
+
+            var beatmap = createBeatmap(objects);
+
+            var hard = new MapSegment
+            {
+                Skillset = Skillset.Streams,
+                StartTime = hardStart - 2000,
+                FirstObjectTime = hardStart,
+                EndTime = hardEnd,
+                ObjectCount = 40,
+                Scores = new Dictionary<Skillset, double> { [Skillset.Streams] = 1 },
+            };
+
+            var extended = finder.ExtendSegment(beatmap, hard, 12_000, 5_000);
+
+            // The build-up right before the hard part is included, the notes before the break are not.
+            Assert.That(extended.FirstObjectTime, Is.EqualTo(20_000).Within(1));
+            Assert.That(extended.StartTime, Is.LessThan(extended.FirstObjectTime));
+
+            // A little of what follows is included, but not all of it.
+            Assert.That(extended.EndTime, Is.GreaterThan(hardEnd + 3000));
+            Assert.That(extended.EndTime, Is.LessThanOrEqualTo(hardEnd + 5000 + finder.MaximumSnap + 1));
+            Assert.That(extended.ObjectCount, Is.GreaterThan(56).And.LessThan(56 + 60));
+        }
+
+        [Test]
+        public void TestSeriesBeatmapPutsPartsOneAfterTheOther()
+        {
+            var first = createBeatmap(squareJumps(0, 40));
+            var second = createBeatmap(stream(1000, 40, 150), approachRate: 7);
+
+            var parts = new[]
+            {
+                new SeriesPart(first, segmentOf(0, 0, 39 * beat / 2)),
+                new SeriesPart(second, segmentOf(0, 1000, 1000 + 39 * beat / 4)),
+            };
+
+            var slots = SeriesTimeline.Build(parts);
+
+            // The first part creates the beatmap, the others are added to it (as they are while a series plays).
+            var state = new SeriesBuildState();
+            var firstData = finder.PrepareSeriesPart(parts[0]);
+            var firstObjects = new SeriesPartObjects(parts[0], firstData, slots[0], null, 0, 0, firstData.Timing, finder.CreateSeriesObjects(firstData, slots[0], 0, state));
+            var series = finder.CreateSeriesBeatmap(firstObjects);
+
+            var secondData = finder.PrepareSeriesPart(parts[1]);
+            double switchTime = slots[0].EndTime + slots[0].Gap / 2;
+            var added = finder.CreateSeriesObjects(secondData, slots[1], switchTime, state);
+            finder.AppendSeriesPart(series, new SeriesPartObjects(parts[1], secondData, slots[1], slots[0], slots[0].EndTime, switchTime, secondData.Timing, added));
+
+            Assert.That(added, Has.Count.EqualTo(40));
+
+            Assert.That(series.HitObjects, Has.Count.EqualTo(80));
+            Assert.That(series.HitObjects.Select(h => h.StartTime), Is.Ordered.Ascending);
+            Assert.That(series.HitObjects[0].StartTime, Is.EqualTo(slots[0].FirstObjectTime).Within(1));
+            Assert.That(series.HitObjects[40].StartTime, Is.EqualTo(slots[1].FirstObjectTime).Within(1));
+            Assert.That(slots[1].FirstObjectTime - series.HitObjects[39].GetEndTime(), Is.EqualTo(slots[0].Gap).Within(1));
+
+            // Combo numbers go on across parts.
+            Assert.That(((OsuHitObject)series.HitObjects[40]).ComboIndex, Is.GreaterThan(((OsuHitObject)series.HitObjects[39]).ComboIndex));
+            Assert.That(((OsuHitObject)series.HitObjects[40]).IndexInCurrentCombo, Is.EqualTo(0));
+
+            // Each part keeps its own map's approach rate (7 is slower than 9).
+            Assert.That(((OsuHitObject)series.HitObjects[0]).TimePreempt, Is.EqualTo(600).Within(1));
+            Assert.That(((OsuHitObject)series.HitObjects[40]).TimePreempt, Is.EqualTo(900).Within(1));
+            Assert.That(series.Difficulty.ApproachRate, Is.EqualTo(9));
+
+            // Each part starts a new combo.
+            Assert.That(((OsuHitObject)series.HitObjects[40]).NewCombo, Is.True);
+        }
+
+        [Test]
+        public void TestSeriesPartCanBePlacedAgainWhenLate()
+        {
+            var part = new SeriesPart(createBeatmap(squareJumps(0, 40)), segmentOf(0, 0, 39 * beat / 2));
+            var data = finder.PrepareSeriesPart(part);
+
+            var early = new SeriesSlot(1000, 1000, 1000, 1000 + 39 * beat / 2, 0);
+            var late = early with { Shift = 5000 };
+
+            var objects = finder.CreateSeriesObjects(data, early, 1000, new SeriesBuildState());
+            Assert.That(objects[0].StartTime, Is.EqualTo(1000).Within(1));
+
+            // Placing it again moves the same objects to the new slot instead of adding the shift twice.
+            objects = finder.CreateSeriesObjects(data, late, 5000, new SeriesBuildState());
+            Assert.That(objects[0].StartTime, Is.EqualTo(5000).Within(1));
+            Assert.That(objects[39].StartTime, Is.EqualTo(5000 + 39 * beat / 2).Within(1));
+        }
+
+        private static MapSegment segmentOf(double start, double first, double end) => new MapSegment
+        {
+            Skillset = Skillset.Jumps,
+            StartTime = start,
+            FirstObjectTime = first,
+            EndTime = end,
+            ObjectCount = 40,
+            Scores = new Dictionary<Skillset, double> { [Skillset.Jumps] = 1 },
+        };
+
+        [Test]
         public void TestEmptyBeatmap()
         {
             var beatmap = new TestWorkingBeatmap(new Beatmap { BeatmapInfo = { Ruleset = new OsuRuleset().RulesetInfo } });
