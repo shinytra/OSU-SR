@@ -1,15 +1,19 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+using System;
 using System.Collections.Generic;
 
-namespace osu.Game.Rulesets.Osu.OsuSR
+namespace osu.Game.OsuSR
 {
     /// <summary>
     /// A playable part of a beatmap, picked because it is hard for one <see cref="Skillset"/>.
     /// </summary>
-    public class MapSegment
+    public record MapSegment
     {
+        /// <summary>The beatmap this segment belongs to, when known.</summary>
+        public Guid? BeatmapID { get; init; }
+
         /// <summary>The skillset this segment was picked for.</summary>
         public required Skillset Skillset { get; init; }
 

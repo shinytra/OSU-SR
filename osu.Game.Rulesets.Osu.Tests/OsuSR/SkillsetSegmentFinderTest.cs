@@ -5,6 +5,7 @@ using System;
 using System.Linq;
 using NUnit.Framework;
 using osu.Game.Beatmaps;
+using osu.Game.OsuSR;
 using osu.Game.Rulesets.Difficulty;
 using osu.Game.Rulesets.Objects;
 using osu.Game.Rulesets.Osu.Difficulty;
