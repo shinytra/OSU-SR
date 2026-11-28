@@ -12,6 +12,8 @@
     <Version>0.0.0</Version>
     <FileVersion>0.0.0</FileVersion>
     <CETCompat>false</CETCompat>
+    <!-- OSU SR: indexing the library allocates a lot on every core; with the workstation GC the cores spent most of their time paused for collections. -->
+    <ServerGarbageCollector>true</ServerGarbageCollector>
   </PropertyGroup>
 
   <!-- Required for deployment. -->
