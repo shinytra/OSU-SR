@@ -1,0 +1,32 @@
+# OSU SR
+
+OSU SR is a fork of osu!lazer (https://github.com/ppy/osu) for **continuous play and skillset training**.
+Instead of playing whole maps, the player plays a chain of map *segments* (mostly the hardest parts) that
+match a chosen skillset (aim, speed, stamina, tech…), with natural transitions between segments.
+
+Scope for now: **osu!standard only**, using the player's **locally installed beatmaps**.
+
+## Plan
+
+1. Minimal lazer base: only "pick a map, play it, see results". (done in the first PR)
+2. Skillset segment detection: `osu.Game.Rulesets.Osu/OsuSR/PatternClassifier.cs` labels every note (jump, flow, burst, stream, spaced stream, fast slider, low/high AR…) from rhythm in beats, distance in radii and angles; `SkillsetSegmentFinder.cs` scores windows as (difficulty of matching notes per second, from the lazer evaluator that fits the skillset) × purity, skips windows that aren't pure enough, and snaps edges to bar lines. 15 skillsets in `osu.Game/OsuSR/Skillset.cs` (11 single, Reading for overlaps, and 3 mixed ones that need both of their parts).
+3. Play a segment: `osu.Game/OsuSR/Screens/SegmentPlayer.cs` + `OsuModSegment` (system mod that drops objects outside the segment).
+4. Continuous session: `osu.Game/OsuSR/Screens/TrainingSession.cs` (one "training" button in the main menu, skillset checkboxes: several = segments alternate between them, star range min/max, 3 s countdown with music fade-in). Series mode (`SeriesPlayer`, `SeriesTimeline`, `SeriesWorkingBeatmap`): N segments, each with its pre-drop and a little post-drop, put end to end as ONE gameplay (no loading between them); each map's music is started, tempo-ramped to the next BPM and crossfaded on the beat by `SeriesPlayer`. Parts come from `SeriesFeed` (low priority thread, 2 parts ahead) and are appended live to the running gameplay, so a series can be endless. Only ranked/approved/loved maps are used, and each part keeps its own AR/CS/OD. Ideas next: tune pattern thresholds on real maps, tonality matching.
+
+## Conventions
+
+- Upstream base: snapshot of ppy/osu tag `2026.1117.0-lazer` (no upstream history; see the import commit).
+  To update, diff two upstream tags and apply the patch, rather than merging.
+- **Hide, don't delete** upstream features, so upstream updates stay easy to apply.
+  Switches live in `osu.Game/OsuSR/OsuSRFeatures.cs`; mark each OSU SR change in upstream files with an `// OSU SR:` comment.
+- New OSU SR code goes under `osu.Game/OsuSR/` (or `osu.Game.Rulesets.Osu/OsuSR/` for ruleset-specific code).
+- Branding: the code is MIT, but the "osu!" name, logo and art assets are not licensed for reuse.
+  Anything published must use OSU SR's own name and visuals.
+
+## Build & test
+
+- Requires the .NET 10 SDK (`global.json`).
+- Run the game: `dotnet run --project osu.Desktop`
+- Build: `dotnet build osu.Desktop`
+- Tests: `dotnet test osu.Game.Tests --filter "FullyQualifiedName~<TestScene>"` (run targeted scenes; the full suite is long).
+  Tests that hit osu! web services fail in sandboxes without network access.
