@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
+using JetBrains.Annotations;
 using osu.Framework.Logging;
 using osu.Framework.Platform;
 using osu.Game.Beatmaps;
@@ -29,7 +31,7 @@ namespace osu.Game.OsuSR
         private const string adjustments_file = "purity-adjustments.json";
 
         private readonly Storage storage;
-        private readonly object syncRoot = new object();
+        private readonly Lock syncRoot = new Lock();
 
         private Dictionary<Skillset, double> adjustments = new Dictionary<Skillset, double>();
         private int reportCount;
@@ -165,6 +167,7 @@ namespace osu.Game.OsuSR
             }
         }
 
+        [UsedImplicitly(ImplicitUseTargetFlags.WithMembers)]
         private class Report
         {
             public DateTimeOffset Time { get; set; }
