@@ -54,5 +54,21 @@ namespace osu.Game.OsuSR
         /// <summary>Very long streams.</summary>
         [Description("Stamina")]
         Stamina,
+
+        /// <summary>Overlaps and pile-ups: telling circles apart (the reading skill, not tied to aim or approach rate).</summary>
+        [Description("Reading (overlaps)")]
+        Reading,
+
+        /// <summary>Parts that mix jumps and streams.</summary>
+        [Description("Jumps + streams")]
+        JumpsStreams,
+
+        /// <summary>Parts that mix flow aim and streams.</summary>
+        [Description("Flow + streams")]
+        FlowStreams,
+
+        /// <summary>Parts that mix tech and fast sliders.</summary>
+        [Description("Tech + sliders")]
+        TechSliders,
     }
 }

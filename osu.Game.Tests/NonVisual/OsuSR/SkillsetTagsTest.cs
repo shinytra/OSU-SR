@@ -22,6 +22,11 @@ namespace osu.Game.Tests.NonVisual.OsuSR
         [TestCase(Skillset.LowAr, "low AR")]
         [TestCase(Skillset.HighAr, "high ar")]
         [TestCase(Skillset.Stamina, "stamina")]
+        [TestCase(Skillset.Reading, "reading")]
+        [TestCase(Skillset.Reading, "overlaps")]
+        [TestCase(Skillset.JumpsStreams, "streams")]
+        [TestCase(Skillset.JumpsStreams, "jump aim")]
+        [TestCase(Skillset.TechSliders, "slider aim")]
         public void TestTagMatchesItsSkillset(Skillset skillset, string tag)
         {
             Assert.That(SkillsetTags.IsTagged(skillset, new[] { tag }));
